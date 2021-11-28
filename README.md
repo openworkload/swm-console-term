@@ -1,4 +1,4 @@
-SkyPort terminal implemented as a console script written in Python
+Sky Port terminal implemented as a console script written in Python
 =====================================================================
 
 # Description
@@ -15,27 +15,33 @@ to utilize client API of the [core Sky Port daemon](https://github.com/skyworkfl
 
 ## Requirements:
 
-Python >= 3.9 is required.
-
+* Python >= 3.9 is required.
 * The following command setups all requirements in a local virtualenv directory:
 ```bash
 make prepare-venv
 ```
-* Load the python environment:
+
+## Run the script:
 ```bash
-. .venv/bin/activate
-```
-* Run the script:
-```bash
-src/swm-console --help
+swm-console --help
 ```
 
 # Development
+
+## Tools
 
 Code autoformatting and validation tools start with the following commands:
 ```bash
 make format
 make check
+```
+
+## Update swmclient
+
+The current project uses swmclient python package heavely. That package is updated frequently,
+thus to update swmclient from local machine one can use pip to update from wheel package:
+```bash
+pip install /path/to/swmclinet/wheel/package
 ```
 
 # Contributing
@@ -44,7 +50,7 @@ We appreciate all contributions. If you are planning to contribute back bug-fixe
 without any further discussion. If you plan to contribute new features, utility functions or extensions,
 please first open an issue and discuss the feature with us.
 
-# Lincese
+# License
 
 We use a shared copyright model that enables all contributors to maintain the copyright on their contributions.
 

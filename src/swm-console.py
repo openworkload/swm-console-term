@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import io
 import platform
 import sys
 import typing
@@ -11,13 +12,17 @@ from tabulate import tabulate
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="SkyPort terminal implemented as a console script.")
-    parser.add_argument("--no-header", help="Do not print header in tables", action='store_true')
+    parser = argparse.ArgumentParser(description="Sky Port terminal implemented as a console script.")
     group = parser.add_mutually_exclusive_group(required=True)
+
+    parser.add_argument("--no-header", help="Do not print header in tables", action='store_true')
+
+    group.add_argument("--job-submit", help="Submit a new job script")
     group.add_argument("--job-list", help="Show all jobs", action='store_true')
     group.add_argument("--remote-list", help="Show remote sites", action='store_true')
     group.add_argument("--node-list", help="Show nodes", action='store_true')
     group.add_argument("--flavor-list", help="Show available flavors", action='store_true')
+
     args = parser.parse_args()
 
     swm_api = SwmApi(
@@ -27,7 +32,9 @@ def main() -> None:
         ca_file="/opt/swm/spool/secure/cluster/ca-chain-cert.pem",
     )
 
-    if args.job_list:
+    if args.job_submit:
+        submit_new_job(args, swm_api)
+    elif args.job_list:
         print_jobs(args, swm_api)
     elif args.remote_list:
         print_remote_sites(args, swm_api)
@@ -35,6 +42,18 @@ def main() -> None:
         print_nodes(args, swm_api)
     elif args.flavor_list:
         print_flavors(args, swm_api)
+
+
+def submit_new_job(args: argparse.Namespace, swm_api: SwmApi) -> None:
+    path = args.job_submit
+    with open(path, "rb", buffering=0) as f:
+        io_bytes = io.BytesIO(f.read())
+        io_obj: File = swm_api.submit_job(io_bytes)
+        while True:
+            if line := io_obj.payload.readline():
+                print(line.decode("utf-8").strip())
+            else:
+                break
 
 
 def find_resource(name: str, resources: typing.List[Resource]) -> typing.Optional[Resource]:
