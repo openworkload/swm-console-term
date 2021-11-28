@@ -17,6 +17,7 @@ def main() -> None:
 
     parser.add_argument("--no-header", help="Do not print header in tables", action='store_true')
 
+    group.add_argument("--job-info", help="Show single job details")
     group.add_argument("--job-submit", help="Submit a new job script")
     group.add_argument("--job-list", help="Show all jobs", action='store_true')
     group.add_argument("--remote-list", help="Show remote sites", action='store_true')
@@ -32,6 +33,8 @@ def main() -> None:
         ca_file="/opt/swm/spool/secure/cluster/ca-chain-cert.pem",
     )
 
+    if args.job_info:
+        print_job_info(args, swm_api)
     if args.job_submit:
         submit_new_job(args, swm_api)
     elif args.job_list:
@@ -42,6 +45,22 @@ def main() -> None:
         print_nodes(args, swm_api)
     elif args.flavor_list:
         print_flavors(args, swm_api)
+
+
+def print_job_info(args: argparse.Namespace, swm_api: SwmApi) -> None:
+    job_id = args.job_info
+    if (job := swm_api.get_job(job_id)) is not None:
+        table = [["ID", job.id],
+                 ["Name", job.name],
+                 ["State", job.state],
+                 ["Submit", job.submit_time],
+                 ["Start", job.start_time],
+                 ["End", job.end_time],
+                 ["Nodes", ", ".join(job.node_names)],
+        ]
+        print(tabulate(table, tablefmt="presto"))
+    else:
+        print("No job found")
 
 
 def submit_new_job(args: argparse.Namespace, swm_api: SwmApi) -> None:
