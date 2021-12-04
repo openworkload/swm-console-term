@@ -4,5 +4,6 @@ flake8
 isort
 mypy
 tabulate
+types-tabulate
 
 swmclient

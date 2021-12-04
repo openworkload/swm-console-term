@@ -6,8 +6,9 @@ import platform
 import sys
 import typing
 
-from swmclient.api import SwmApi
-from swmclient.generated.models.resource import Resource
+from swmclient.api import SwmApi  # type: ignore
+from swmclient.generated.models.resource import Resource  # type: ignore
+from swmclient.generated.types import File  # type: ignore
 from tabulate import tabulate
 
 
@@ -19,6 +20,8 @@ def main() -> None:
 
     group.add_argument("--job-info", help="Show single job details")
     group.add_argument("--job-submit", help="Submit a new job script")
+    group.add_argument("--job-cancel", help="Cancel job")
+    group.add_argument("--job-requeue", help="Requeue job")
     group.add_argument("--job-list", help="Show all jobs", action="store_true")
     group.add_argument("--remote-list", help="Show remote sites", action="store_true")
     group.add_argument("--node-list", help="Show nodes", action="store_true")
@@ -35,8 +38,12 @@ def main() -> None:
 
     if args.job_info:
         print_job_info(args, swm_api)
-    if args.job_submit:
+    elif args.job_submit:
         submit_new_job(args, swm_api)
+    elif args.job_cancel:
+        cancel_job(args, swm_api)
+    elif args.job_requeue:
+        requeue_job(args, swm_api)
     elif args.job_list:
         print_jobs(args, swm_api)
     elif args.remote_list:
@@ -62,6 +69,24 @@ def print_job_info(args: argparse.Namespace, swm_api: SwmApi) -> None:
         print(tabulate(table, tablefmt="presto"))
     else:
         print("No job found")
+
+
+def requeue_job(args: argparse.Namespace, swm_api: SwmApi) -> None:
+    job_id = args.job_requeue
+    if (output := swm_api.requeue_job(job_id)) is not None:
+        for line in output.decode("utf-8").split("\n"):
+            print(line.strip())
+    else:
+        print("No result")
+
+
+def cancel_job(args: argparse.Namespace, swm_api: SwmApi) -> None:
+    job_id = args.job_cancel
+    if (output := swm_api.cancel_job(job_id)) is not None:
+        for line in output.decode("utf-8").split("\n"):
+            print(line.strip())
+    else:
+        print("No result")
 
 
 def submit_new_job(args: argparse.Namespace, swm_api: SwmApi) -> None:

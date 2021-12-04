@@ -18,6 +18,7 @@ format:
 
 .PHONY: check
 check:
+	. .venv/bin/activate
 	$(VENV_BIN)/flake8 src
 	$(VENV_BIN)/mypy src
 
