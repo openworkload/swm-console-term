@@ -6,12 +6,12 @@ VENV_BIN=.venv/bin
 prepare-venv: .SHELLFLAGS := -euo pipefail -c
 prepare-venv: SHELL := bash
 prepare-venv:
-	$(PYTHON) -m pip install 'virtualenv>=16.4.3' 'pip-tools'
 	virtualenv --system-site-packages .venv
 	$(VENV_BIN)/pip install --ignore-installed --no-deps -r requirements.txt
 
 .PHONY: format
 format:
+	. .venv/bin/activate
 	$(VENV_BIN)/autoflake -i -r --ignore-init-module-imports src
 	$(VENV_BIN)/black src
 	$(VENV_BIN)/isort src
