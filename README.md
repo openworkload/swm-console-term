@@ -6,10 +6,10 @@ Sky Port terminal implemented as a console script written in Python
 Sky Port is an universal bus between user software and compute resources.
 It can also be considered as a transportation layer between workload producers
 and compute resource providers. Sky Port makes it easy to connect user software
-to different cloud resources.
+to different cloud resources. This is a parto of [Open Workload](http://openworkload.org) project.
 
 The current project represents a console program that uses swmclient python package
-to utilize client API of the [core Sky Port daemon](https://github.com/skyworkflows/swm-core).
+to utilize client API of the [Sky Port core daemon](https://github.com/openworkload/swm-core).
 
 # How to run
 
