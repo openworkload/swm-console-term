@@ -6,4 +6,4 @@ mypy
 tabulate
 types-tabulate
 
-swmclient
+swmclient >= 0.1.3
