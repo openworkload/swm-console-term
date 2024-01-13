@@ -15,7 +15,7 @@ to utilize client API of the [Sky Port core daemon](https://github.com/openworkl
 
 ## Requirements:
 
-* Python >= 3.9 is required.
+* Python >= 3.10 is required.
 * The following command setups all requirements in a local virtualenv directory:
 ```bash
 make prepare-venv

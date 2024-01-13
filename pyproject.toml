@@ -1,6 +1,6 @@
 [tool.black]
 line-length = 120
-target_version = ['py39']
+target_version = ['py310']
 exclude = '''
 (
   /(
@@ -16,6 +16,6 @@ line_length = 120
 profile = "black"
 
 [tool.mypy]
-python_version = 3.9
+python_version = 3.10
 strict = true
 follow_imports = "silent"
