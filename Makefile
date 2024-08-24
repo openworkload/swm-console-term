@@ -22,6 +22,11 @@ check:
 	$(VENV_BIN)/flake8 src
 	$(VENV_BIN)/mypy src
 
+.PHONY: update-client-package
+update-client-package:
+	. .venv/bin/activate
+	pip install --upgrade -e ../swm-python-client
+
 .PHONY: requirements
 requirements: requirements.txt
 	make prepare-venv || true

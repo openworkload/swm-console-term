@@ -59,11 +59,12 @@ def print_job_info(args: argparse.Namespace, swm_api: SwmApi) -> None:
     if (job := swm_api.get_job(job_id)) is not None:
         table = [
             ["ID", job.id],
-            ["State", job.state],
             ["Submit", job.submit_time],
             ["Start", job.start_time],
             ["End", job.end_time],
             ["Node IPs", ", ".join(job.node_ips)],
+            ["State", job.state],
+            ["Details", job.state_details],
         ]
         print(tabulate(table, tablefmt="presto"))
     else:
@@ -176,17 +177,30 @@ def print_remote_sites(args: argparse.Namespace, swm_api: SwmApi) -> None:
 def print_jobs(args: argparse.Namespace, swm_api: SwmApi) -> None:
     jobs = swm_api.get_jobs()
     if isinstance(jobs, list):
-        headers = [] if args.no_header else ["ID", "State", "Submit time", "Start time", "End time", "Node IPs"]
+        headers = (
+            []
+            if args.no_header
+            else [
+                "ID",
+                "Submit time",
+                "Start time",
+                "End time",
+                "Node IPs",
+                "State",
+                "Details",
+            ]
+        )
         table = []
         for job in jobs:
             table.append(
                 [
                     job.id,
-                    job.state,
                     job.submit_time,
                     job.start_time,
                     job.end_time,
                     ", ".join(job.node_ips),
+                    job.state,
+                    job.state_details,
                 ]
             )
         print(tabulate(table, headers=headers, tablefmt="presto"))
