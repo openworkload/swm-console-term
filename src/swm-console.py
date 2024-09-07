@@ -136,6 +136,14 @@ def print_nodes(args: argparse.Namespace, swm_api: SwmApi) -> None:
         headers = [] if args.no_header else ["ID", "Name", "Power", "Alloc", "Storage", "Mem", "CPUs"]
         table = []
         for node in nodes:
+            if not node.name.startswith("swm-"):
+                flavor_node = False
+                for res in node.resources:
+                    if res.name == "flavor":
+                        flavor_node = True
+                        break
+                if flavor_node:
+                    continue
             table.append(
                 [
                     node.id,

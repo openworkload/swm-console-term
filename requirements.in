@@ -3,7 +3,9 @@ black
 flake8
 isort
 mypy
+
 tabulate
 types-tabulate
 
+attrs
 swmclient >= 0.1.3
