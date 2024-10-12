@@ -1,3 +1,79 @@
+[build-system]
+requires = [
+    "setuptools~=70.0.0",
+    "setuptools-git-versioning>=2.0,<3",
+    "wheel",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "swmconsole"
+description = "Console terminal for swm-core"
+authors = [
+    {name = "Taras Shapovalov", email = "taras@iclouds.net"},
+]
+keywords = [
+    "hpc",
+    "high performance computing",
+    "cloud",
+    "cloud computing",
+    "open workload",
+    "sky port",
+]
+classifiers = [
+    "Environment :: Console",
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3 :: Only",
+]
+requires-python = "~=3.10"
+dependencies = [
+    "swmclient",
+    "tabulate",
+    "attrs",
+]
+license = {text = "BSD 3-Clause License"}
+dynamic = ["version", "readme"]
+
+[project.urls]
+Homepage = "https://openworkload.org"
+Documentation = "https://openworkload.org"
+Repository = "https://github.com/openworkload/swm-console-term"
+Tests = "https://github.com/openworkload/swm-console-term/tree/master/test"
+Issues = "https://github.com/openworkload/swm-console-term/issues"
+Distribution = "https://pypi.org/project/swmconsole"
+
+[project.optional-dependencies]
+build = [
+    "build==1.2.1"
+]
+publish = [
+    "twine==5.1.1"
+]
+test = [
+    "pytest",
+]
+
+[project.scripts]
+swmconsole = "swmconsole.run:main"
+
+[tool.setuptools.packages.find]
+where = ["./"]
+include = ["swmconsole*"]
+exclude = ["swmconsole.egg-info"]
+
+[tool.setuptools-git-versioning]
+enabled = true
+template = "{tag}"
+dev_template = "{tag}"
+dirty_template = "{tag}"
+
+[tool.setuptools.dynamic]
+readme = {file = ["README.md"], content-type = "text/markdown"}
+
 [tool.black]
 line-length = 120
 target_version = ['py310']

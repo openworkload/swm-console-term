@@ -33,3 +33,19 @@ requirements: requirements.txt
 
 requirements.txt: requirements.in
 	@pip-compile $<
+
+.PHONY: package
+package:
+	. .venv/bin/activate
+	$(PYTHON) -m build
+
+.PHONY: upload
+upload:
+	. .venv/bin/activate
+	$(PYTHON) -m twine upload --verbose --config-file .pypirc dist/*
+
+.PHONY: clean
+clean:
+	rm -fr ./dist
+	rm -fr swmconsole.egg-info
+	rm -fr build

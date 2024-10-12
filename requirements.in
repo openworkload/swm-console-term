@@ -4,8 +4,8 @@ flake8
 isort
 mypy
 
+attrs
 tabulate
 types-tabulate
 
-attrs
 swmclient >= 0.1.3
