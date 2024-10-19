@@ -11,12 +11,18 @@ from swmclient.generated.models.resource import Resource  # type: ignore
 from swmclient.generated.types import File  # type: ignore
 from tabulate import tabulate
 
+URL = f"https://{platform.node()}:8443"
+KEY_FILE = "~/.swm/key.pem"
+CERT_FILE = "~/.swm/cert.pem"
+CA_FILE = "/opt/swm/spool/secure/cluster/ca-chain-cert.pem"
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Sky Port terminal implemented as a console script.")
     group = parser.add_mutually_exclusive_group(required=True)
 
     parser.add_argument("--no-header", help="Do not print header in tables", action="store_true")
+    parser.add_argument("--debug", help="Enable debug messages", action="store_true")
 
     group.add_argument("--job-info", help="Show single job details")
     group.add_argument("--job-submit", help="Submit a new job script")
@@ -26,15 +32,16 @@ def main() -> None:
     group.add_argument("--remote-list", help="Show remote sites", action="store_true")
     group.add_argument("--node-list", help="Show nodes", action="store_true")
     group.add_argument("--flavor-list", help="Show available flavors", action="store_true")
+    group.add_argument("--image-list", help="Show available images", action="store_true")
 
     args = parser.parse_args()
 
-    swm_api = SwmApi(
-        url=f"https://{platform.node()}:8443",
-        key_file="~/.swm/key.pem",
-        cert_file="~/.swm/cert.pem",
-        ca_file="/opt/swm/spool/secure/cluster/ca-chain-cert.pem",
-    )
+    if args.debug:
+        print(f"[DEBUG] url: {URL}")
+        print(f"[DEBUG] key: {KEY_FILE}")
+        print(f"[DEBUG] cert: {CERT_FILE}")
+        print(f"[DEBUG] ca: {CA_FILE}")
+    swm_api = SwmApi(url=URL, key_file=KEY_FILE, cert_file=CERT_FILE, ca_file=CA_FILE)
 
     if args.job_info:
         print_job_info(args, swm_api)
@@ -52,6 +59,8 @@ def main() -> None:
         print_nodes(args, swm_api)
     elif args.flavor_list:
         print_flavors(args, swm_api)
+    elif args.image_list:
+        print_images(args, swm_api)
 
 
 def print_job_info(args: argparse.Namespace, swm_api: SwmApi) -> None:
@@ -236,6 +245,26 @@ def print_flavors(args: argparse.Namespace, swm_api: SwmApi) -> None:
         print(tabulate(table, headers=headers, tablefmt="presto"))
     else:
         print(f"Wrong output: {flavors}", file=sys.stderr)
+        sys.exit(1)
+
+
+def print_images(args: argparse.Namespace, swm_api: SwmApi) -> None:
+    images = swm_api.get_images()
+    if isinstance(images, list):
+        headers = [] if args.no_header else ["ID", "Name", "Kind", "Comment"]
+        table = []
+        for image in images:
+            table.append(
+                [
+                    image.id,
+                    image.name,
+                    image.kind,
+                    image.comment,
+                ]
+            )
+        print(tabulate(table, headers=headers, tablefmt="presto"))
+    else:
+        print(f"Wrong output: {images}", file=sys.stderr)
         sys.exit(1)
 
 
