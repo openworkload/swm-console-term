@@ -251,12 +251,11 @@ def print_flavors(args: argparse.Namespace, swm_api: SwmApi) -> None:
 def print_images(args: argparse.Namespace, swm_api: SwmApi) -> None:
     images = swm_api.get_images()
     if isinstance(images, list):
-        headers = [] if args.no_header else ["ID", "Name", "Kind", "Comment"]
+        headers = [] if args.no_header else ["Name", "Kind", "Comment"]
         table = []
         for image in images:
             table.append(
                 [
-                    image.id,
                     image.name,
                     image.kind,
                     image.comment,
