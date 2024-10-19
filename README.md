@@ -10,6 +10,7 @@ to different cloud resources. This is a parto of [Open Workload](http://openwork
 
 The current project represents a console program that uses swmclient python package
 to utilize client API of the [Sky Port core daemon](https://github.com/openworkload/swm-core).
+The source code of this package can be found [here](https://github.com/openworkload/swm-console-term).
 
 # How to run
 
@@ -21,9 +22,14 @@ to utilize client API of the [Sky Port core daemon](https://github.com/openworkl
 make prepare-venv
 ```
 
-## Run the script:
+## Install from pypi:
 ```bash
-swm-console --help
+pip install swmconsole
+```
+
+## Run:
+```bash
+swmconsole --help
 ```
 
 # Development

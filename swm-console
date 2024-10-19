@@ -1,4 +1,4 @@
 #!/bin/bash
 
 . .venv/bin/activate
-src/swm-console.py $@
+swmconsole/run.py $@
