@@ -2,7 +2,7 @@
 
 import argparse
 import io
-import platform
+import socket
 import sys
 import typing
 
@@ -11,7 +11,7 @@ from swmclient.generated.models.resource import Resource  # type: ignore
 from swmclient.generated.types import File  # type: ignore
 from tabulate import tabulate
 
-URL = f"https://{platform.node()}:8443"
+URL = f"https://{socket.getfqdn()}:8443"
 KEY_FILE = "~/.swm/key.pem"
 CERT_FILE = "~/.swm/cert.pem"
 CA_FILE = "/opt/swm/spool/secure/cluster/ca-chain-cert.pem"
