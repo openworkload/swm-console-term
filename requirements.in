@@ -11,4 +11,4 @@ attrs
 tabulate
 types-tabulate
 
-swmclient >= 0.1.3
+swmclient >= 0.1.7

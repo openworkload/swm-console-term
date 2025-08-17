@@ -1,6 +1,6 @@
 [build-system]
 requires = [
-    "setuptools~=70.0.0",
+    "setuptools==75.6.0",
     "setuptools-git-versioning>=2.0,<3",
     "wheel",
 ]
@@ -31,7 +31,7 @@ classifiers = [
 ]
 requires-python = "~=3.10"
 dependencies = [
-    "swmclient",
+    "swmclient>=0.1.7",
     "tabulate",
     "attrs",
 ]
