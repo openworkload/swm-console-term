@@ -139,10 +139,16 @@ def get_res_cpus(resources: typing.List[Resource]) -> str:
     return ""
 
 
+def get_res_gpus(resources: typing.List[Resource]) -> str:
+    if (res := find_resource("gpus", resources)) is not None:
+        return str(res.count)
+    return ""
+
+
 def print_nodes(args: argparse.Namespace, swm_api: SwmApi) -> None:
     nodes = swm_api.get_nodes()
     if isinstance(nodes, list):
-        headers = [] if args.no_header else ["ID", "Name", "Power", "Alloc", "Storage", "Mem", "CPUs"]
+        headers = [] if args.no_header else ["ID", "Name", "Power", "Alloc", "Storage", "Mem", "CPUs", "GPUs"]
         table = []
         for node in nodes:
             if not node.name.startswith("swm-"):
@@ -162,6 +168,7 @@ def print_nodes(args: argparse.Namespace, swm_api: SwmApi) -> None:
                     get_res_storage(node.resources),
                     get_res_mem(node.resources),
                     get_res_cpus(node.resources),
+                    get_res_gpus(node.resources),
                 ]
             )
         print(tabulate(table, headers=headers, tablefmt="presto"))
