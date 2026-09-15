@@ -29,6 +29,11 @@ def main() -> None:
     group.add_argument("--job-cancel", help="Cancel job")
     group.add_argument("--job-requeue", help="Requeue job")
     group.add_argument("--job-list", help="Show all jobs", action="store_true")
+    group.add_argument(
+        "--job-purge",
+        help="Permanently purge all jobs for the authenticated user",
+        action="store_true",
+    )
     group.add_argument("--remote-list", help="Show remote sites", action="store_true")
     group.add_argument("--node-list", help="Show nodes", action="store_true")
     group.add_argument("--flavor-list", help="Show available flavors", action="store_true")
@@ -53,6 +58,8 @@ def main() -> None:
         requeue_job(args, swm_api)
     elif args.job_list:
         print_jobs(args, swm_api)
+    elif args.job_purge:
+        purge_jobs(args, swm_api)
     elif args.remote_list:
         print_remote_sites(args, swm_api)
     elif args.node_list:
@@ -61,7 +68,6 @@ def main() -> None:
         print_flavors(args, swm_api)
     elif args.image_list:
         print_images(args, swm_api)
-
 
 def print_job_info(args: argparse.Namespace, swm_api: SwmApi) -> None:
     job_id = args.job_info
@@ -94,6 +100,22 @@ def cancel_job(args: argparse.Namespace, swm_api: SwmApi) -> None:
     if (output := swm_api.cancel_job(job_id)) is not None:
         for line in output.decode("utf-8").split("\n"):
             print(line.strip())
+    else:
+        print("No result")
+
+
+def purge_jobs(args: argparse.Namespace, swm_api: SwmApi) -> None:
+    jobs = swm_api.get_jobs()
+    job_count = len(jobs) if isinstance(jobs, list) else 0
+    print(f"This will permanently purge {job_count} job(s) and related allocations from Sky Port.")
+    answer = input("Do you really want to purge all your jobs? [y/N]: ").strip().lower()
+    if answer not in ("y", "yes"):
+        print("Aborted.")
+        return
+    if (output := swm_api.purge_jobs()) is not None:
+        for line in output.decode("utf-8").split("\n"):
+            if line.strip():
+                print(line.strip())
     else:
         print("No result")
 

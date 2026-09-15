@@ -6,7 +6,7 @@ Sky Port terminal implemented as a console script written in Python
 Sky Port is an universal bus between user software and compute resources.
 It can also be considered as a transportation layer between workload producers
 and compute resource providers. Sky Port makes it easy to connect user software
-to different cloud resources. This is a parto of [Open Workload](http://openworkload.org) project.
+to different cloud resources. This is a part of [Open Workload](http://openworkload.org) project.
 
 The current project represents a console program that uses swmclient python package
 to utilize client API of the [Sky Port core daemon](https://github.com/openworkload/swm-core).
@@ -32,6 +32,61 @@ pip install swmconsole
 swmconsole --help
 ```
 
+# Main commands
+
+Connection uses mutual TLS by default:
+* URL: `https://<fqdn>:8443`
+* Key / cert: `~/.swm/key.pem`, `~/.swm/cert.pem`
+* CA: `/opt/swm/spool/secure/cluster/ca-chain-cert.pem`
+
+## Jobs
+
+```bash
+# List all jobs for the authenticated user
+swmconsole --job-list
+
+# Show details for one job
+swmconsole --job-info <job-id>
+
+# Submit a job script
+swmconsole --job-submit /path/to/script.job
+
+# Cancel a running or queued job
+swmconsole --job-cancel <job-id>
+
+# Requeue a job
+swmconsole --job-requeue <job-id>
+
+# Permanently purge all jobs and related allocations (asks for confirmation)
+swmconsole --job-purge
+```
+
+## Resources
+
+```bash
+# List remote sites / partitions
+swmconsole --remote-list
+
+# List nodes
+swmconsole --node-list
+
+# List available flavors
+swmconsole --flavor-list
+
+# List available images
+swmconsole --image-list
+```
+
+## Options
+
+```bash
+# Omit table headers
+swmconsole --job-list --no-header
+
+# Print connection debug info
+swmconsole --job-list --debug
+```
+
 # Development
 
 ## Tools
@@ -44,10 +99,15 @@ make check
 
 ## Update swmclient
 
-The current project uses swmclient python package heavely. That package is updated frequently,
+The current project uses swmclient python package heavily. That package is updated frequently,
 thus to update swmclient from local machine one can use pip to update from wheel package:
 ```bash
 pip install /path/to/swmclient/wheel/package
+```
+
+Or install from a local checkout in editable mode:
+```bash
+pip install -e /path/to/swm-python-client
 ```
 
 # Contributing
