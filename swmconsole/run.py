@@ -5,7 +5,9 @@ import io
 import socket
 import sys
 import typing
+from enum import Enum
 
+import yaml
 from swmclient.api import SwmApi  # type: ignore
 from swmclient.generated.models.resource import Resource  # type: ignore
 from swmclient.generated.types import File  # type: ignore
@@ -15,6 +17,7 @@ URL = f"https://{socket.getfqdn()}:8443"
 KEY_FILE = "~/.swm/key.pem"
 CERT_FILE = "~/.swm/cert.pem"
 CA_FILE = "/opt/swm/spool/secure/cluster/ca-chain-cert.pem"
+YAML_VERSION = 1
 
 
 def main() -> None:
@@ -23,6 +26,7 @@ def main() -> None:
 
     parser.add_argument("--no-header", help="Do not print header in tables", action="store_true")
     parser.add_argument("--debug", help="Enable debug messages", action="store_true")
+    parser.add_argument("--yaml", help="Print output in YAML format", action="store_true")
 
     group.add_argument("--job-info", help="Show single job details")
     group.add_argument("--job-submit", help="Submit a new job script")
@@ -42,10 +46,10 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.debug:
-        print(f"[DEBUG] url: {URL}")
-        print(f"[DEBUG] key: {KEY_FILE}")
-        print(f"[DEBUG] cert: {CERT_FILE}")
-        print(f"[DEBUG] ca: {CA_FILE}")
+        print(f"[DEBUG] url: {URL}", file=sys.stderr)
+        print(f"[DEBUG] key: {KEY_FILE}", file=sys.stderr)
+        print(f"[DEBUG] cert: {CERT_FILE}", file=sys.stderr)
+        print(f"[DEBUG] ca: {CA_FILE}", file=sys.stderr)
     swm_api = SwmApi(url=URL, key_file=KEY_FILE, cert_file=CERT_FILE, ca_file=CA_FILE)
 
     if args.job_info:
@@ -69,9 +73,62 @@ def main() -> None:
     elif args.image_list:
         print_images(args, swm_api)
 
+
+def yaml_safe(value: typing.Any) -> typing.Any:
+    """Convert API/model values into types that yaml.safe_dump can represent."""
+    if isinstance(value, Enum):
+        return yaml_safe(value.value)
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): yaml_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [yaml_safe(item) for item in value]
+    return str(value)
+
+
+def print_as_yaml(data: typing.Mapping[str, typing.Any]) -> None:
+    payload: typing.Dict[str, typing.Any] = {"version": YAML_VERSION}
+    payload.update(yaml_safe(dict(data)))
+    yaml.safe_dump(payload, sys.stdout, sort_keys=False, allow_unicode=True)
+
+
+def print_action_result(args: argparse.Namespace, output: typing.Optional[bytes], empty_msg: str = "No result") -> None:
+    if output is None:
+        if args.yaml:
+            print_as_yaml({"message": empty_msg})
+        else:
+            print(empty_msg)
+        return
+    lines = [line.strip() for line in output.decode("utf-8").split("\n") if line.strip()]
+    if args.yaml:
+        print_as_yaml({"output": "\n".join(lines)})
+    else:
+        for line in lines:
+            print(line)
+
+
+def job_to_dict(job: typing.Any, *, truncate: bool = False) -> typing.Dict[str, typing.Any]:
+    details = job.state_details or ""
+    if truncate:
+        details = truncate_details(details)
+    return {
+        "id": job.id,
+        "submit_time": job.submit_time,
+        "start_time": job.start_time,
+        "end_time": job.end_time,
+        "node_ips": list(job.node_ips),
+        "state": job.state,
+        "details": details,
+    }
+
+
 def print_job_info(args: argparse.Namespace, swm_api: SwmApi) -> None:
     job_id = args.job_info
     if (job := swm_api.get_job(job_id)) is not None:
+        if args.yaml:
+            print_as_yaml({"job": job_to_dict(job)})
+            return
         table = [
             ["ID", job.id],
             ["Submit", job.submit_time],
@@ -83,41 +140,32 @@ def print_job_info(args: argparse.Namespace, swm_api: SwmApi) -> None:
         ]
         print(tabulate(table, tablefmt="presto"))
     else:
-        print("No job found")
+        if args.yaml:
+            print_as_yaml({"job": None, "message": "No job found"})
+        else:
+            print("No job found")
 
 
 def requeue_job(args: argparse.Namespace, swm_api: SwmApi) -> None:
-    job_id = args.job_requeue
-    if (output := swm_api.requeue_job(job_id)) is not None:
-        for line in output.decode("utf-8").split("\n"):
-            print(line.strip())
-    else:
-        print("No result")
+    print_action_result(args, swm_api.requeue_job(args.job_requeue))
 
 
 def cancel_job(args: argparse.Namespace, swm_api: SwmApi) -> None:
-    job_id = args.job_cancel
-    if (output := swm_api.cancel_job(job_id)) is not None:
-        for line in output.decode("utf-8").split("\n"):
-            print(line.strip())
-    else:
-        print("No result")
+    print_action_result(args, swm_api.cancel_job(args.job_cancel))
 
 
 def purge_jobs(args: argparse.Namespace, swm_api: SwmApi) -> None:
     jobs = swm_api.get_jobs()
     job_count = len(jobs) if isinstance(jobs, list) else 0
-    print(f"This will permanently purge {job_count} job(s) and related allocations from Sky Port.")
+    print(f"This will permanently purge {job_count} job(s) and related allocations from Sky Port.", file=sys.stderr)
     answer = input("Do you really want to purge all your jobs? [y/N]: ").strip().lower()
     if answer not in ("y", "yes"):
-        print("Aborted.")
+        if args.yaml:
+            print_as_yaml({"aborted": True, "message": "Aborted."})
+        else:
+            print("Aborted.")
         return
-    if (output := swm_api.purge_jobs()) is not None:
-        for line in output.decode("utf-8").split("\n"):
-            if line.strip():
-                print(line.strip())
-    else:
-        print("No result")
+    print_action_result(args, swm_api.purge_jobs())
 
 
 def submit_new_job(args: argparse.Namespace, swm_api: SwmApi) -> None:
@@ -125,11 +173,17 @@ def submit_new_job(args: argparse.Namespace, swm_api: SwmApi) -> None:
     with open(path, "rb", buffering=0) as f:
         io_bytes = io.BytesIO(f.read())
         io_obj: File = swm_api.submit_job(io_bytes)
+        lines: typing.List[str] = []
         while True:
             if line := io_obj.payload.readline():
-                print(line.decode("utf-8").strip())
+                lines.append(line.decode("utf-8").strip())
             else:
                 break
+        if args.yaml:
+            print_as_yaml({"output": "\n".join(line for line in lines if line)})
+        else:
+            for line in lines:
+                print(line)
 
 
 def find_resource(name: str, resources: typing.List[Resource]) -> typing.Optional[Resource]:
@@ -167,32 +221,42 @@ def get_res_gpus(resources: typing.List[Resource]) -> str:
     return ""
 
 
+def is_flavor_only_node(node: typing.Any) -> bool:
+    if node.name.startswith("swm-"):
+        return False
+    for res in node.resources:
+        if res.name == "flavor":
+            return True
+    return False
+
+
 def print_nodes(args: argparse.Namespace, swm_api: SwmApi) -> None:
     nodes = swm_api.get_nodes()
     if isinstance(nodes, list):
-        headers = [] if args.no_header else ["ID", "Name", "Power", "Alloc", "Storage", "Mem", "CPUs", "GPUs"]
-        table = []
+        rows = []
         for node in nodes:
-            if not node.name.startswith("swm-"):
-                flavor_node = False
-                for res in node.resources:
-                    if res.name == "flavor":
-                        flavor_node = True
-                        break
-                if flavor_node:
-                    continue
-            table.append(
-                [
-                    node.id,
-                    node.name,
-                    node.state_power,
-                    node.state_alloc,
-                    get_res_storage(node.resources),
-                    get_res_mem(node.resources),
-                    get_res_cpus(node.resources),
-                    get_res_gpus(node.resources),
-                ]
+            if is_flavor_only_node(node):
+                continue
+            rows.append(
+                {
+                    "id": node.id,
+                    "name": node.name,
+                    "power": node.state_power,
+                    "alloc": node.state_alloc,
+                    "storage": get_res_storage(node.resources),
+                    "mem": get_res_mem(node.resources),
+                    "cpus": get_res_cpus(node.resources),
+                    "gpus": get_res_gpus(node.resources),
+                }
             )
+        if args.yaml:
+            print_as_yaml({"nodes": rows})
+            return
+        headers = [] if args.no_header else ["ID", "Name", "Power", "Alloc", "Storage", "Mem", "CPUs", "GPUs"]
+        table = [
+            [row["id"], row["name"], row["power"], row["alloc"], row["storage"], row["mem"], row["cpus"], row["gpus"]]
+            for row in rows
+        ]
         print(tabulate(table, headers=headers, tablefmt="presto"))
     else:
         print(f"Wrong output: {nodes}", file=sys.stderr)
@@ -202,27 +266,42 @@ def print_nodes(args: argparse.Namespace, swm_api: SwmApi) -> None:
 def print_remote_sites(args: argparse.Namespace, swm_api: SwmApi) -> None:
     remotes = swm_api.get_remote_sites()
     if isinstance(remotes, list):
+        rows = [
+            {
+                "id": remote.id,
+                "name": remote.name,
+                "kind": remote.kind,
+                "default_image_id": remote.default_image_id,
+                "default_flavor_id": remote.default_flavor_id,
+            }
+            for remote in remotes
+        ]
+        if args.yaml:
+            print_as_yaml({"remotes": rows})
+            return
         headers = [] if args.no_header else ["ID", "Name", "Kind", "Default image ID", "Default flavor ID"]
-        table = []
-        for remote in remotes:
-            table.append(
-                [
-                    remote.id,
-                    remote.name,
-                    remote.kind,
-                    remote.default_image_id,
-                    remote.default_flavor_id,
-                ]
-            )
+        table = [
+            [row["id"], row["name"], row["kind"], row["default_image_id"], row["default_flavor_id"]] for row in rows
+        ]
         print(tabulate(table, headers=headers, tablefmt="presto"))
     else:
         print(f"Wrong output: {remotes}", file=sys.stderr)
         sys.exit(1)
 
 
+def truncate_details(details: typing.Optional[str], max_len: int = 50) -> str:
+    text = details or ""
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 3] + "..."
+
+
 def print_jobs(args: argparse.Namespace, swm_api: SwmApi) -> None:
     jobs = swm_api.get_jobs()
     if isinstance(jobs, list):
+        if args.yaml:
+            print_as_yaml({"jobs": [job_to_dict(job) for job in jobs]})
+            return
         headers = (
             []
             if args.no_header
@@ -246,7 +325,7 @@ def print_jobs(args: argparse.Namespace, swm_api: SwmApi) -> None:
                     job.end_time,
                     ", ".join(job.node_ips),
                     job.state,
-                    job.state_details,
+                    truncate_details(job.state_details),
                 ]
             )
         print(tabulate(table, headers=headers, tablefmt="presto"))
@@ -258,19 +337,24 @@ def print_jobs(args: argparse.Namespace, swm_api: SwmApi) -> None:
 def print_flavors(args: argparse.Namespace, swm_api: SwmApi) -> None:
     flavors = swm_api.get_flavors()
     if isinstance(flavors, list):
+        rows = [
+            {
+                "id": flavor.id,
+                "name": flavor.name,
+                "storage": get_res_storage(flavor.resources),
+                "mem": get_res_mem(flavor.resources),
+                "cpus": get_res_cpus(flavor.resources),
+                "price": flavor.price,
+            }
+            for flavor in flavors
+        ]
+        if args.yaml:
+            print_as_yaml({"flavors": rows})
+            return
         headers = [] if args.no_header else ["ID", "Name", "Storage", "Mem", "CPUs", "Price"]
-        table = []
-        for flavor in flavors:
-            table.append(
-                [
-                    flavor.id,
-                    flavor.name,
-                    get_res_storage(flavor.resources),
-                    get_res_mem(flavor.resources),
-                    get_res_cpus(flavor.resources),
-                    flavor.price,
-                ]
-            )
+        table = [
+            [row["id"], row["name"], row["storage"], row["mem"], row["cpus"], row["price"]] for row in rows
+        ]
         print(tabulate(table, headers=headers, tablefmt="presto"))
     else:
         print(f"Wrong output: {flavors}", file=sys.stderr)
@@ -280,16 +364,19 @@ def print_flavors(args: argparse.Namespace, swm_api: SwmApi) -> None:
 def print_images(args: argparse.Namespace, swm_api: SwmApi) -> None:
     images = swm_api.get_images()
     if isinstance(images, list):
+        rows = [
+            {
+                "name": image.name,
+                "kind": image.kind,
+                "comment": image.comment,
+            }
+            for image in images
+        ]
+        if args.yaml:
+            print_as_yaml({"images": rows})
+            return
         headers = [] if args.no_header else ["Name", "Kind", "Comment"]
-        table = []
-        for image in images:
-            table.append(
-                [
-                    image.name,
-                    image.kind,
-                    image.comment,
-                ]
-            )
+        table = [[row["name"], row["kind"], row["comment"]] for row in rows]
         print(tabulate(table, headers=headers, tablefmt="presto"))
     else:
         print(f"Wrong output: {images}", file=sys.stderr)

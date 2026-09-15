@@ -10,5 +10,7 @@ wheel
 attrs
 tabulate
 types-tabulate
+PyYAML
+types-PyYAML
 
 swmclient >= 0.1.7

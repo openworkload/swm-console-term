@@ -85,6 +85,10 @@ swmconsole --job-list --no-header
 
 # Print connection debug info
 swmconsole --job-list --debug
+
+# Print any command output as YAML (includes version: 1)
+swmconsole --job-list --yaml
+swmconsole --job-info <job-id> --yaml
 ```
 
 # Development
