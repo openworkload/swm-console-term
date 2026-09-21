@@ -7,6 +7,7 @@ import sys
 import typing
 from enum import Enum
 
+import httpx
 import yaml
 from swmclient.api import SwmApi  # type: ignore
 from swmclient.generated.models.resource import Resource  # type: ignore
@@ -19,6 +20,54 @@ CERT_FILE = "~/.swm/cert.pem"
 CA_FILE = "/opt/swm/spool/secure/cluster/ca-chain-cert.pem"
 YAML_VERSION = 1
 
+# CLI aliases (case-insensitive) -> API job state letter codes.
+# "active"/"a" is a meta-filter (not a single API state).
+JOB_STATE_ACTIVE = "active"
+JOB_STATE_ALIASES: typing.Dict[str, str] = {
+    "a": JOB_STATE_ACTIVE,
+    "active": JOB_STATE_ACTIVE,
+    "r": "R",
+    "running": "R",
+    "q": "Q",
+    "queued": "Q",
+    "w": "W",
+    "waiting": "W",
+    "f": "F",
+    "finished": "F",
+    "e": "E",
+    "error": "E",
+    "t": "T",
+    "transferring": "T",
+    "c": "C",
+    "canceled": "C",
+    "cancelled": "C",
+}
+# Terminal states excluded by the "active" meta-filter.
+JOB_STATE_INACTIVE: typing.FrozenSet[str] = frozenset({"F", "C"})
+
+
+def parse_job_state(value: str) -> str:
+    """Accept a one-letter code, full state name, or meta-state; return filter token."""
+    key = value.strip().lower()
+    if key in JOB_STATE_ALIASES:
+        return JOB_STATE_ALIASES[key]
+    allowed = ", ".join(sorted(set(JOB_STATE_ALIASES)))
+    raise argparse.ArgumentTypeError(f"invalid job state {value!r}; expected one of: {allowed}")
+
+
+def job_matches_state_filter(job: typing.Any, state_filter: str) -> bool:
+    code = job_state_code(job)
+    if state_filter == JOB_STATE_ACTIVE:
+        return code not in JOB_STATE_INACTIVE
+    return code == state_filter
+
+
+def job_state_code(job: typing.Any) -> str:
+    state = getattr(job, "state", None)
+    if isinstance(state, Enum):
+        return str(state.value)
+    return str(state or "")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Sky Port terminal implemented as a console script.")
@@ -27,6 +76,16 @@ def main() -> None:
     parser.add_argument("--no-header", help="Do not print header in tables", action="store_true")
     parser.add_argument("--debug", help="Enable debug messages", action="store_true")
     parser.add_argument("--yaml", help="Print output in YAML format", action="store_true")
+    parser.add_argument(
+        "--state",
+        metavar="STATE",
+        type=parse_job_state,
+        help=(
+            "Filter --job-list by job state: letter or name (R/running, Q/queued, "
+            "W/waiting, F/finished, E/error, T/transferring, C/canceled), "
+            "or meta-state A/active (all except finished and canceled)"
+        ),
+    )
 
     group.add_argument("--job-info", help="Show single job details")
     group.add_argument("--job-submit", help="Submit a new job script")
@@ -44,6 +103,9 @@ def main() -> None:
     group.add_argument("--image-list", help="Show available images", action="store_true")
 
     args = parser.parse_args()
+
+    if args.state is not None and not args.job_list:
+        parser.error("--state can only be used with --job-list")
 
     if args.debug:
         print(f"[DEBUG] url: {URL}", file=sys.stderr)
@@ -108,19 +170,39 @@ def print_action_result(args: argparse.Namespace, output: typing.Optional[bytes]
             print(line)
 
 
-def job_to_dict(job: typing.Any, *, truncate: bool = False) -> typing.Dict[str, typing.Any]:
+def main_node_ip(job: typing.Any) -> str:
+    """Return the job main node public IP (API main_ip, else first node_ips entry)."""
+    additional = getattr(job, "additional_properties", None) or {}
+    if isinstance(additional, dict):
+        main_ip = additional.get("main_ip")
+        if main_ip:
+            return str(main_ip)
+    main_ip = getattr(job, "main_ip", None)
+    if main_ip:
+        return str(main_ip)
+    ips = getattr(job, "node_ips", None) or []
+    if not ips:
+        return ""
+    return str(ips[0])
+
+
+def job_to_dict(job: typing.Any, *, truncate: bool = False, main_ip_only: bool = False) -> typing.Dict[str, typing.Any]:
     details = job.state_details or ""
     if truncate:
         details = truncate_details(details)
-    return {
+    data: typing.Dict[str, typing.Any] = {
         "id": job.id,
         "submit_time": job.submit_time,
         "start_time": job.start_time,
         "end_time": job.end_time,
-        "node_ips": list(job.node_ips),
         "state": job.state,
         "details": details,
     }
+    if main_ip_only:
+        data["main_ip"] = main_node_ip(job)
+    else:
+        data["node_ips"] = list(job.node_ips)
+    return data
 
 
 def print_job_info(args: argparse.Namespace, swm_api: SwmApi) -> None:
@@ -172,7 +254,26 @@ def submit_new_job(args: argparse.Namespace, swm_api: SwmApi) -> None:
     path = args.job_submit
     with open(path, "rb", buffering=0) as f:
         io_bytes = io.BytesIO(f.read())
-        io_obj: File = swm_api.submit_job(io_bytes)
+        try:
+            io_obj: File = swm_api.submit_job(io_bytes)
+        except httpx.TimeoutException as exc:
+            # Job may already be queued; SkyPort accepted the write after the client gave up.
+            msg = (
+                f"Job submit timed out waiting for Sky Port ({exc}). "
+                "The job may still have been accepted; check with --job-list."
+            )
+            if args.yaml:
+                print_as_yaml({"error": msg, "hint": "job-list"})
+            else:
+                print(msg, file=sys.stderr)
+            sys.exit(1)
+        if io_obj is None:
+            msg = "Job submit returned no response from Sky Port."
+            if args.yaml:
+                print_as_yaml({"error": msg})
+            else:
+                print(msg, file=sys.stderr)
+            sys.exit(1)
         lines: typing.List[str] = []
         while True:
             if line := io_obj.payload.readline():
@@ -298,40 +399,50 @@ def truncate_details(details: typing.Optional[str], max_len: int = 50) -> str:
 
 def print_jobs(args: argparse.Namespace, swm_api: SwmApi) -> None:
     jobs = swm_api.get_jobs()
-    if isinstance(jobs, list):
-        if args.yaml:
-            print_as_yaml({"jobs": [job_to_dict(job) for job in jobs]})
-            return
-        headers = (
-            []
-            if args.no_header
-            else [
-                "ID",
-                "Submit time",
-                "Start time",
-                "End time",
-                "Node IPs",
-                "State",
-                "Details",
-            ]
-        )
-        table = []
-        for job in jobs:
-            table.append(
-                [
-                    job.id,
-                    job.submit_time,
-                    job.start_time,
-                    job.end_time,
-                    ", ".join(job.node_ips),
-                    job.state,
-                    truncate_details(job.state_details),
-                ]
-            )
-        print(tabulate(table, headers=headers, tablefmt="presto"))
-    else:
+    if not isinstance(jobs, list):
         print(f"Wrong output: {jobs}", file=sys.stderr)
         sys.exit(1)
+    if args.state is not None:
+        jobs = [job for job in jobs if job_matches_state_filter(job, args.state)]
+    if not jobs:
+        msg = "No jobs found"
+        if args.state is not None:
+            msg = f"No jobs found with state filter {args.state!r}"
+        if args.yaml:
+            print_as_yaml({"jobs": [], "message": msg})
+        else:
+            print(msg)
+        return
+    if args.yaml:
+        print_as_yaml({"jobs": [job_to_dict(job, main_ip_only=True) for job in jobs]})
+        return
+    headers = (
+        []
+        if args.no_header
+        else [
+            "ID",
+            "Submit time",
+            "Start time",
+            "End time",
+            "Main IP",
+            "State",
+            "Details",
+        ]
+    )
+    table = []
+    for job in jobs:
+        table.append(
+            [
+                job.id,
+                job.submit_time,
+                job.start_time,
+                job.end_time,
+                main_node_ip(job),
+                job.state,
+                truncate_details(job.state_details),
+            ]
+        )
+    print(tabulate(table, headers=headers, tablefmt="presto"))
 
 
 def print_flavors(args: argparse.Namespace, swm_api: SwmApi) -> None:
