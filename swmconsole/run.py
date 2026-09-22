@@ -252,39 +252,47 @@ def purge_jobs(args: argparse.Namespace, swm_api: SwmApi) -> None:
 
 def submit_new_job(args: argparse.Namespace, swm_api: SwmApi) -> None:
     path = args.job_submit
-    with open(path, "rb", buffering=0) as f:
-        io_bytes = io.BytesIO(f.read())
-        try:
-            io_obj: File = swm_api.submit_job(io_bytes)
-        except httpx.TimeoutException as exc:
-            # Job may already be queued; SkyPort accepted the write after the client gave up.
-            msg = (
-                f"Job submit timed out waiting for Sky Port ({exc}). "
-                "The job may still have been accepted; check with --job-list."
-            )
-            if args.yaml:
-                print_as_yaml({"error": msg, "hint": "job-list"})
-            else:
-                print(msg, file=sys.stderr)
-            sys.exit(1)
-        if io_obj is None:
-            msg = "Job submit returned no response from Sky Port."
-            if args.yaml:
-                print_as_yaml({"error": msg})
-            else:
-                print(msg, file=sys.stderr)
-            sys.exit(1)
-        lines: typing.List[str] = []
-        while True:
-            if line := io_obj.payload.readline():
-                lines.append(line.decode("utf-8").strip())
-            else:
-                break
+    try:
+        with open(path, "rb", buffering=0) as f:
+            io_bytes = io.BytesIO(f.read())
+    except OSError as exc:
+        msg = f"Cannot read job script '{path}': {exc.strerror}"
         if args.yaml:
-            print_as_yaml({"output": "\n".join(line for line in lines if line)})
+            print_as_yaml({"error": msg})
         else:
-            for line in lines:
-                print(line)
+            print(msg, file=sys.stderr)
+        sys.exit(1)
+    try:
+        io_obj: File = swm_api.submit_job(io_bytes)
+    except httpx.TimeoutException as exc:
+        # Job may already be queued; SkyPort accepted the write after the client gave up.
+        msg = (
+            f"Job submit timed out waiting for Sky Port ({exc}). "
+            "The job may still have been accepted; check with --job-list."
+        )
+        if args.yaml:
+            print_as_yaml({"error": msg, "hint": "job-list"})
+        else:
+            print(msg, file=sys.stderr)
+        sys.exit(1)
+    if io_obj is None:
+        msg = "Job submit returned no response from Sky Port."
+        if args.yaml:
+            print_as_yaml({"error": msg})
+        else:
+            print(msg, file=sys.stderr)
+        sys.exit(1)
+    lines: typing.List[str] = []
+    while True:
+        if line := io_obj.payload.readline():
+            lines.append(line.decode("utf-8").strip())
+        else:
+            break
+    if args.yaml:
+        print_as_yaml({"output": "\n".join(line for line in lines if line)})
+    else:
+        for line in lines:
+            print(line)
 
 
 def find_resource(name: str, resources: typing.List[Resource]) -> typing.Optional[Resource]:
