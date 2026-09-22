@@ -211,6 +211,7 @@ def print_job_info(args: argparse.Namespace, swm_api: SwmApi) -> None:
         if args.yaml:
             print_as_yaml({"job": job_to_dict(job)})
             return
+        details = job.state_details or ""
         table = [
             ["ID", job.id],
             ["Submit", job.submit_time],
@@ -218,9 +219,16 @@ def print_job_info(args: argparse.Namespace, swm_api: SwmApi) -> None:
             ["End", job.end_time],
             ["Node IPs", ", ".join(job.node_ips)],
             ["State", job.state],
-            ["Details", job.state_details],
         ]
+        # Keep Details out of the table so multiline text is not easy to miss
+        # among tabulate continuation rows (label column blank on lines 2+).
         print(tabulate(table, tablefmt="presto"))
+        if "\n" in details:
+            print(" Details  |")
+            for line in details.splitlines():
+                print(f"          | {line}")
+        else:
+            print(f" Details  | {details}")
     else:
         if args.yaml:
             print_as_yaml({"job": None, "message": "No job found"})
