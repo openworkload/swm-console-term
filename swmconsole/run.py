@@ -87,7 +87,7 @@ def main() -> None:
         ),
     )
 
-    group.add_argument("--job-info", help="Show single job details")
+    group.add_argument("--job-show", help="Show single job details")
     group.add_argument("--job-submit", help="Submit a new job script")
     group.add_argument("--job-cancel", help="Cancel job")
     group.add_argument("--job-requeue", help="Requeue job")
@@ -114,8 +114,8 @@ def main() -> None:
         print(f"[DEBUG] ca: {CA_FILE}", file=sys.stderr)
     swm_api = SwmApi(url=URL, key_file=KEY_FILE, cert_file=CERT_FILE, ca_file=CA_FILE)
 
-    if args.job_info:
-        print_job_info(args, swm_api)
+    if args.job_show:
+        print_job_show(args, swm_api)
     elif args.job_submit:
         submit_new_job(args, swm_api)
     elif args.job_cancel:
@@ -205,8 +205,8 @@ def job_to_dict(job: typing.Any, *, truncate: bool = False, main_ip_only: bool =
     return data
 
 
-def print_job_info(args: argparse.Namespace, swm_api: SwmApi) -> None:
-    job_id = args.job_info
+def print_job_show(args: argparse.Namespace, swm_api: SwmApi) -> None:
+    job_id = args.job_show
     if (job := swm_api.get_job(job_id)) is not None:
         if args.yaml:
             print_as_yaml({"job": job_to_dict(job)})

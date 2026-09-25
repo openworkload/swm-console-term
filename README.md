@@ -46,7 +46,7 @@ Connection uses mutual TLS by default:
 swmconsole --job-list
 
 # Show details for one job
-swmconsole --job-info <job-id>
+swmconsole --job-show <job-id>
 
 # Submit a job script
 swmconsole --job-submit /path/to/script.job
@@ -88,7 +88,7 @@ swmconsole --job-list --debug
 
 # Print any command output as YAML (includes version: 1)
 swmconsole --job-list --yaml
-swmconsole --job-info <job-id> --yaml
+swmconsole --job-show <job-id> --yaml
 ```
 
 # Development
