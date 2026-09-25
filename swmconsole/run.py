@@ -9,9 +9,9 @@ from enum import Enum
 
 import httpx
 import yaml
-from swmclient.api import SwmApi  # type: ignore
-from swmclient.generated.models.resource import Resource  # type: ignore
-from swmclient.generated.types import File  # type: ignore
+from swmclient.api import SwmApi  # type: ignore[import-untyped]
+from swmclient.generated.models.resource import Resource
+from swmclient.generated.types import File
 from tabulate import tabulate
 
 URL = f"https://{socket.getfqdn()}:8443"
@@ -292,15 +292,15 @@ def submit_new_job(args: argparse.Namespace, swm_api: SwmApi) -> None:
         sys.exit(1)
     lines: typing.List[str] = []
     while True:
-        if line := io_obj.payload.readline():
-            lines.append(line.decode("utf-8").strip())
+        if raw := io_obj.payload.readline():
+            lines.append(raw.decode("utf-8").strip())
         else:
             break
     if args.yaml:
-        print_as_yaml({"output": "\n".join(line for line in lines if line)})
+        print_as_yaml({"output": "\n".join(out for out in lines if out)})
     else:
-        for line in lines:
-            print(line)
+        for out in lines:
+            print(out)
 
 
 def find_resource(name: str, resources: typing.List[Resource]) -> typing.Optional[Resource]:
@@ -312,17 +312,19 @@ def find_resource(name: str, resources: typing.List[Resource]) -> typing.Optiona
 
 def get_res_storage(resources: typing.List[Resource]) -> str:
     if (res := find_resource("storage", resources)) is not None:
-        if res.count >= 1000 * 1000:
-            return str(int(res.count / (1000 * 1000 * 1000))) + " GB"
-        return str(res.count) + " B"
+        count = res.count if isinstance(res.count, int) else 0
+        if count >= 1000 * 1000:
+            return str(int(count / (1000 * 1000 * 1000))) + " GB"
+        return str(count) + " B"
     return ""
 
 
 def get_res_mem(resources: typing.List[Resource]) -> str:
     if (res := find_resource("mem", resources)) is not None:
-        if res.count >= 1000 * 1000:
-            return str(int(res.count / (1000 * 1000))) + " MB"
-        return str(res.count) + " B"
+        count = res.count if isinstance(res.count, int) else 0
+        if count >= 1000 * 1000:
+            return str(int(count / (1000 * 1000))) + " MB"
+        return str(count) + " B"
     return ""
 
 

@@ -1,7 +1,7 @@
 [build-system]
 requires = [
-    "setuptools==75.6.0",
-    "setuptools-git-versioning>=2.0,<3",
+    "setuptools==84.0.0",
+    "setuptools-git-versioning>=2.0,<4",
     "wheel",
 ]
 build-backend = "setuptools.build_meta"
@@ -26,10 +26,10 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: BSD License",
     "Operating System :: OS Independent",
-    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3 :: Only",
 ]
-requires-python = "~=3.10"
+requires-python = "~=3.12"
 dependencies = [
     "swmclient>=0.1.7",
     "tabulate",
@@ -49,10 +49,10 @@ Distribution = "https://pypi.org/project/swmconsole"
 
 [project.optional-dependencies]
 build = [
-    "build==1.2.1"
+    "build==1.6.1"
 ]
 publish = [
-    "twine==5.1.1"
+    "twine==7.0.0"
 ]
 test = [
     "pytest",
@@ -77,7 +77,7 @@ readme = {file = ["README.md"], content-type = "text/markdown"}
 
 [tool.black]
 line-length = 120
-target_version = ['py310']
+target_version = ['py312']
 exclude = '''
 (
   /(
@@ -93,6 +93,6 @@ line_length = 120
 profile = "black"
 
 [tool.mypy]
-python_version = 3.10
+python_version = 3.12
 strict = true
 follow_imports = "silent"

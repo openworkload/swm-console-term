@@ -16,7 +16,7 @@ The source code of this package can be found [here](https://github.com/openworkl
 
 ## Requirements:
 
-* Python >= 3.10 is required.
+* Python >= 3.12 is required.
 * The following command setups all requirements in a local virtualenv directory:
 ```bash
 make prepare-venv

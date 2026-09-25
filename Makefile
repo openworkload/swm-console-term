@@ -1,4 +1,4 @@
-PYTHON=python3
+PYTHON=python3.12
 VENV_BIN=.venv/bin
 
 .PHONY: prepare-venv
@@ -6,26 +6,31 @@ VENV_BIN=.venv/bin
 prepare-venv: .SHELLFLAGS := -euo pipefail -c
 prepare-venv: SHELL := bash
 prepare-venv:
-	virtualenv --system-site-packages .venv
-	$(VENV_BIN)/pip install --ignore-installed --no-deps -r requirements.txt
+	$(PYTHON) -m venv .venv
+	$(VENV_BIN)/python -m pip install --upgrade pip
+	$(VENV_BIN)/python -m pip install --ignore-installed --no-deps -r requirements.txt
+	# PyPI swmclient may lag local (e.g. purge_jobs); prefer sibling checkout when present.
+	@if [ -d ../swm-python-client ]; then \
+		$(VENV_BIN)/python -m pip install -e ../swm-python-client; \
+	fi
 
 .PHONY: format
 format:
 	. .venv/bin/activate
-	$(VENV_BIN)/autoflake -i -r --ignore-init-module-imports src
-	$(VENV_BIN)/black src
-	$(VENV_BIN)/isort src
+	$(VENV_BIN)/autoflake -i -r --ignore-init-module-imports swmconsole
+	$(VENV_BIN)/black swmconsole
+	$(VENV_BIN)/isort swmconsole
 
 .PHONY: check
 check:
 	. .venv/bin/activate
-	$(VENV_BIN)/flake8 src
-	$(VENV_BIN)/mypy src
+	$(VENV_BIN)/flake8 swmconsole
+	$(VENV_BIN)/mypy swmconsole
 
 .PHONY: update-client-package
 update-client-package:
 	. .venv/bin/activate
-	pip install --upgrade -e ../swm-python-client
+	$(VENV_BIN)/python -m pip install --upgrade -e ../swm-python-client
 
 .PHONY: requirements
 requirements: requirements.txt
