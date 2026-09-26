@@ -61,12 +61,25 @@ swmconsole --job-requeue <job-id>
 swmconsole --job-purge
 ```
 
+## Overview (TUI)
+
+With no command options, swmconsole opens an interactive htop-style overview
+(default refresh every 5s):
+
+```bash
+swmconsole
+swmconsole --interval 2
+```
+
+Keys: `↑/↓` or `j/k` select a job, `Enter` show details, `Esc` back to the job list (or quit from the list), `r` refresh, `q` quit.
+
+Top pane: cloud partitions (created `swm-*-main` partition managers), active jobs count, cloud nodes (`swm-*`). Bottom pane: all jobs (active first by newest submit time, then inactive F/C/E by newest submit time).
+
 ## Resources
 
 ```bash
 # List remote sites / partitions
 swmconsole --remote-list
-
 # List nodes
 swmconsole --node-list
 

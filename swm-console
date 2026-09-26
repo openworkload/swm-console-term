@@ -1,4 +1,11 @@
 #!/bin/bash
 
-. .venv/bin/activate
-swmconsole/run.py $@
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+PYTHON="${ROOT}/.venv/bin/python"
+
+if [ ! -x "${PYTHON}" ]; then
+    echo "Virtualenv not found. Run: make prepare-venv" >&2
+    exit 1
+fi
+
+exec "${PYTHON}" -m swmconsole.run "$@"

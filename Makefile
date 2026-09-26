@@ -6,12 +6,15 @@ VENV_BIN=.venv/bin
 prepare-venv: .SHELLFLAGS := -euo pipefail -c
 prepare-venv: SHELL := bash
 prepare-venv:
-	$(PYTHON) -m venv .venv
+	# Recreate cleanly: a stale .venv can leave python -> python3.12 with a missing target.
+	$(PYTHON) -m venv --clear .venv
+	test -x $(VENV_BIN)/python
 	$(VENV_BIN)/python -m pip install --upgrade pip
 	$(VENV_BIN)/python -m pip install --ignore-installed --no-deps -r requirements.txt
+	$(VENV_BIN)/python -m pip install -e .
 	# PyPI swmclient may lag local (e.g. purge_jobs); prefer sibling checkout when present.
-	@if [ -d ../swm-python-client ]; then \
-		$(VENV_BIN)/python -m pip install -e ../swm-python-client; \
+	if [ -d ../swm-python-client ]; then
+		$(VENV_BIN)/python -m pip install -e ../swm-python-client
 	fi
 
 .PHONY: format
@@ -54,3 +57,4 @@ clean:
 	rm -fr ./dist
 	rm -fr swmconsole.egg-info
 	rm -fr build
+	rm -fr .venv

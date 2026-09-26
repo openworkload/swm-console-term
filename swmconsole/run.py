@@ -9,41 +9,26 @@ from enum import Enum
 
 import httpx
 import yaml
-from swmclient.api import SwmApi  # type: ignore[import-untyped]
-from swmclient.generated.models.resource import Resource
-from swmclient.generated.types import File
+from swmclient.api import SwmApi  # type: ignore[import-not-found]
+from swmclient.generated.models.resource import Resource  # type: ignore[import-not-found]
+from swmclient.generated.types import File  # type: ignore[import-not-found]
 from tabulate import tabulate
+
+from .common import (
+    JOB_STATE_ACTIVE,
+    JOB_STATE_ALIASES,
+    JOB_STATE_INACTIVE,
+    is_flavor_only_node,
+    job_state_code,
+    main_node_ip,
+    truncate_details,
+)
 
 URL = f"https://{socket.getfqdn()}:8443"
 KEY_FILE = "~/.swm/key.pem"
 CERT_FILE = "~/.swm/cert.pem"
 CA_FILE = "/opt/swm/spool/secure/cluster/ca-chain-cert.pem"
 YAML_VERSION = 1
-
-# CLI aliases (case-insensitive) -> API job state letter codes.
-# "active"/"a" is a meta-filter (not a single API state).
-JOB_STATE_ACTIVE = "active"
-JOB_STATE_ALIASES: typing.Dict[str, str] = {
-    "a": JOB_STATE_ACTIVE,
-    "active": JOB_STATE_ACTIVE,
-    "r": "R",
-    "running": "R",
-    "q": "Q",
-    "queued": "Q",
-    "w": "W",
-    "waiting": "W",
-    "f": "F",
-    "finished": "F",
-    "e": "E",
-    "error": "E",
-    "t": "T",
-    "transferring": "T",
-    "c": "C",
-    "canceled": "C",
-    "cancelled": "C",
-}
-# Terminal states excluded by the "active" meta-filter.
-JOB_STATE_INACTIVE: typing.FrozenSet[str] = frozenset({"F", "C"})
 
 
 def parse_job_state(value: str) -> str:
@@ -62,16 +47,24 @@ def job_matches_state_filter(job: typing.Any, state_filter: str) -> bool:
     return code == state_filter
 
 
-def job_state_code(job: typing.Any) -> str:
-    state = getattr(job, "state", None)
-    if isinstance(state, Enum):
-        return str(state.value)
-    return str(state or "")
+def parse_interval(value: str) -> float:
+    try:
+        interval = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid interval {value!r}; expected a number") from exc
+    if interval <= 0:
+        raise argparse.ArgumentTypeError("interval must be > 0")
+    return interval
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Sky Port terminal implemented as a console script.")
-    group = parser.add_mutually_exclusive_group(required=True)
+    parser = argparse.ArgumentParser(
+        description=(
+            "Sky Port terminal. With no command options, opens an interactive overview TUI "
+            "(htop-style). Use --interval to change the refresh period."
+        )
+    )
+    group = parser.add_mutually_exclusive_group(required=False)
 
     parser.add_argument("--no-header", help="Do not print header in tables", action="store_true")
     parser.add_argument("--debug", help="Enable debug messages", action="store_true")
@@ -83,8 +76,15 @@ def main() -> None:
         help=(
             "Filter --job-list by job state: letter or name (R/running, Q/queued, "
             "W/waiting, F/finished, E/error, T/transferring, C/canceled), "
-            "or meta-state A/active (all except finished and canceled)"
+            "or meta-state A/active (all except finished, canceled, and error)"
         ),
+    )
+    parser.add_argument(
+        "--interval",
+        metavar="SECONDS",
+        type=parse_interval,
+        default=None,
+        help="Overview refresh interval in seconds (default: 5; only for the default overview TUI)",
     )
 
     group.add_argument("--job-show", help="Show single job details")
@@ -104,8 +104,27 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    command_selected = any(
+        [
+            args.job_show,
+            args.job_submit,
+            args.job_cancel,
+            args.job_requeue,
+            args.job_list,
+            args.job_purge,
+            args.remote_list,
+            args.node_list,
+            args.flavor_list,
+            args.image_list,
+        ]
+    )
+
     if args.state is not None and not args.job_list:
         parser.error("--state can only be used with --job-list")
+    if args.interval is not None and command_selected:
+        parser.error("--interval can only be used with the default overview (no other command)")
+    if not command_selected and args.yaml:
+        parser.error("--yaml cannot be used with the overview TUI")
 
     if args.debug:
         print(f"[DEBUG] url: {URL}", file=sys.stderr)
@@ -134,6 +153,11 @@ def main() -> None:
         print_flavors(args, swm_api)
     elif args.image_list:
         print_images(args, swm_api)
+    else:
+        from .overview import DEFAULT_INTERVAL, run_overview
+
+        interval = args.interval if args.interval is not None else DEFAULT_INTERVAL
+        run_overview(swm_api, interval=interval)
 
 
 def yaml_safe(value: typing.Any) -> typing.Any:
@@ -168,22 +192,6 @@ def print_action_result(args: argparse.Namespace, output: typing.Optional[bytes]
     else:
         for line in lines:
             print(line)
-
-
-def main_node_ip(job: typing.Any) -> str:
-    """Return the job main node public IP (API main_ip, else first node_ips entry)."""
-    additional = getattr(job, "additional_properties", None) or {}
-    if isinstance(additional, dict):
-        main_ip = additional.get("main_ip")
-        if main_ip:
-            return str(main_ip)
-    main_ip = getattr(job, "main_ip", None)
-    if main_ip:
-        return str(main_ip)
-    ips = getattr(job, "node_ips", None) or []
-    if not ips:
-        return ""
-    return str(ips[0])
 
 
 def job_to_dict(job: typing.Any, *, truncate: bool = False, main_ip_only: bool = False) -> typing.Dict[str, typing.Any]:
@@ -340,15 +348,6 @@ def get_res_gpus(resources: typing.List[Resource]) -> str:
     return ""
 
 
-def is_flavor_only_node(node: typing.Any) -> bool:
-    if node.name.startswith("swm-"):
-        return False
-    for res in node.resources:
-        if res.name == "flavor":
-            return True
-    return False
-
-
 def print_nodes(args: argparse.Namespace, swm_api: SwmApi) -> None:
     nodes = swm_api.get_nodes()
     if isinstance(nodes, list):
@@ -406,13 +405,6 @@ def print_remote_sites(args: argparse.Namespace, swm_api: SwmApi) -> None:
     else:
         print(f"Wrong output: {remotes}", file=sys.stderr)
         sys.exit(1)
-
-
-def truncate_details(details: typing.Optional[str], max_len: int = 50) -> str:
-    text = details or ""
-    if len(text) <= max_len:
-        return text
-    return text[: max_len - 3] + "..."
 
 
 def print_jobs(args: argparse.Namespace, swm_api: SwmApi) -> None:
@@ -481,9 +473,7 @@ def print_flavors(args: argparse.Namespace, swm_api: SwmApi) -> None:
             print_as_yaml({"flavors": rows})
             return
         headers = [] if args.no_header else ["ID", "Name", "Storage", "Mem", "CPUs", "Price"]
-        table = [
-            [row["id"], row["name"], row["storage"], row["mem"], row["cpus"], row["price"]] for row in rows
-        ]
+        table = [[row["id"], row["name"], row["storage"], row["mem"], row["cpus"], row["price"]] for row in rows]
         print(tabulate(table, headers=headers, tablefmt="presto"))
     else:
         print(f"Wrong output: {flavors}", file=sys.stderr)
