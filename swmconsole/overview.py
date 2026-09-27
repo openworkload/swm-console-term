@@ -57,13 +57,14 @@ class OverviewApp:
         self._mode = "list"  # "list" | "detail"
         self._detail_job: typing.Any | None = None
         self._detail_id: str | None = None
+        self._detail_stdout: str | None = None
         self._partitions = 0
         self._cloud_nodes = 0
         self._active_job_count = 0
         self._error: str | None = None
         self._last_refresh = 0.0
         self._refreshing = False
-        self._help = "q/Esc:quit  arrows/j/k:select  Enter:details  r:refresh"
+        self._help = "q/Esc:quit  arrows/j/k:select  Enter:details  Del:cancel  r:refresh"
 
     def main(self, stdscr: typing.Any) -> None:
         curses.curs_set(0)
@@ -237,17 +238,42 @@ class OverviewApp:
                     self._error = str(exc)
             return
 
+        stdout_text = self._read_job_stdout(detail_id)
+
         with self._lock:
             if self._mode != "detail" or self._detail_id != detail_id:
                 return
             if detail is not None:
                 self._detail_job = detail
+                self._detail_stdout = stdout_text
                 self._error = None
             else:
                 # Job gone; keep list snapshot and return to it.
                 self._mode = "list"
                 self._detail_job = None
                 self._detail_id = None
+                self._detail_stdout = None
+
+    def _read_job_stdout(self, job_id: str) -> str:
+        """Fetch job stdout via API; return decoded text or a short status string."""
+        try:
+            file_obj = self._api.get_job_stdout(job_id)
+        except Exception as exc:  # noqa: BLE001 - show in detail pane
+            return f"(stdout unavailable: {exc})"
+        if file_obj is None:
+            return "(no stdout yet)"
+        payload = getattr(file_obj, "payload", None)
+        if payload is None:
+            return "(no stdout yet)"
+        try:
+            raw = payload.read()
+        except Exception as exc:  # noqa: BLE001
+            return f"(stdout unavailable: {exc})"
+        if not raw:
+            return "(no stdout yet)"
+        if isinstance(raw, bytes):
+            return raw.decode("utf-8", errors="replace")
+        return str(raw)
 
     def _handle_key(self, key: int) -> bool:
         """Return True to quit. Must stay non-blocking."""
@@ -267,7 +293,14 @@ class OverviewApp:
                     self._mode = "list"
                     self._detail_job = None
                     self._detail_id = None
+                    self._detail_stdout = None
                 # Keep showing the cached list; next interval refresh updates it.
+                return False
+            if key == curses.KEY_DC:  # Delete -- cancel current detail job if not finished
+                with self._lock:
+                    job = self._detail_job
+                self._cancel_job_if_not_finished(job)
+                return False
             return False
 
         if key == 27:  # Esc on the job list exits the overview
@@ -305,10 +338,53 @@ class OverviewApp:
                     with self._lock:
                         self._detail_id = str(job_id)
                         self._detail_job = job
+                        self._detail_stdout = None
                         self._mode = "detail"
                     # Fetch fuller details in the background; UI already shows snapshot.
                     self._request_detail_refresh()
+        elif key == curses.KEY_DC:  # Delete -- cancel selected job if not finished
+            if jobs and 0 <= selected < len(jobs):
+                self._cancel_job_if_not_finished(jobs[selected])
         return False
+
+    def _cancel_job_if_not_finished(self, job: typing.Any | None) -> None:
+        """Cancel job via API unless it is already finished (state F)."""
+        if job is None:
+            with self._lock:
+                self._error = "No job selected to cancel"
+            return
+        job_id = getattr(job, "id", None)
+        if not job_id:
+            with self._lock:
+                self._error = "Selected job has no id"
+            return
+        code = job_state_code(job)
+        if code == "F":
+            with self._lock:
+                self._error = f"Job {job_id} is finished; not canceled"
+            return
+
+        with self._lock:
+            self._error = f"Canceling job {job_id}..."
+
+        def worker() -> None:
+            try:
+                self._api.cancel_job(str(job_id))
+                with self._lock:
+                    self._error = f"Canceled job {job_id}"
+            except Exception as exc:  # noqa: BLE001 - show in TUI
+                with self._lock:
+                    self._error = f"Cancel failed for {job_id}: {exc}"
+            # Refresh list (and detail if still open on this job).
+            with self._lock:
+                mode = self._mode
+                detail_id = self._detail_id
+            if mode == "detail" and detail_id == str(job_id):
+                self._request_detail_refresh()
+            else:
+                self._request_refresh()
+
+        threading.Thread(target=worker, name="swm-overview-cancel", daemon=True).start()
 
     def _draw(self, stdscr: typing.Any, height: int, width: int) -> None:
         with self._lock:
@@ -321,6 +397,7 @@ class OverviewApp:
             active_job_count = self._active_job_count
             error = self._error
             detail_job = self._detail_job
+            detail_stdout = self._detail_stdout
             refreshing = self._refreshing
 
         visible = max(1, height - FOOTER_HEIGHT - STATS_HEIGHT - 1)
@@ -335,7 +412,7 @@ class OverviewApp:
         stdscr.erase()
         self._draw_stats(stdscr, width, partitions, cloud_nodes, active_job_count, mode, error, refreshing)
         if mode == "detail":
-            self._draw_detail(stdscr, height, width, detail_job)
+            self._draw_detail(stdscr, height, width, detail_job, detail_stdout)
         else:
             self._draw_job_table(stdscr, height, width, jobs, selected, scroll)
         self._draw_footer(stdscr, height, width, mode)
@@ -420,8 +497,16 @@ class OverviewApp:
                 attr = self._state_attr(job)
                 self._addstr(stdscr, y, 0, line, attr)
 
-    def _draw_detail(self, stdscr: typing.Any, height: int, width: int, job: typing.Any | None) -> None:
+    def _draw_detail(
+        self,
+        stdscr: typing.Any,
+        height: int,
+        width: int,
+        job: typing.Any | None,
+        stdout_text: str | None,
+    ) -> None:
         y = STATS_HEIGHT
+        bottom = height - FOOTER_HEIGHT
         if job is None:
             self._addstr(stdscr, y, 2, "No job details", curses.color_pair(PAIR_ERROR))
             return
@@ -437,7 +522,7 @@ class OverviewApp:
         ]
         label_w = 10
         for label, value in rows:
-            if y >= height - FOOTER_HEIGHT - 1:
+            if y >= bottom - 1:
                 break
             self._addstr(stdscr, y, 2, f"{label:<{label_w}}", curses.color_pair(PAIR_TITLE) | curses.A_BOLD)
             self._addstr(
@@ -449,13 +534,32 @@ class OverviewApp:
             )
             y += 1
 
+        # Cap state_details so stdout keeps the remaining pane.
+        detail_lines = [ln for ln in str(details).splitlines() if ln][:3]
         y += 1
-        if y < height - FOOTER_HEIGHT:
+        if y < bottom:
             self._addstr(stdscr, y, 2, "Details", curses.color_pair(PAIR_TITLE) | curses.A_BOLD)
             y += 1
-        for line in str(details).splitlines() or [""]:
-            if y >= height - FOOTER_HEIGHT:
+        for line in detail_lines or [""]:
+            if y >= bottom:
                 break
+            self._addstr(stdscr, y, 4, self._clip(line, width - 5), 0)
+            y += 1
+
+        y += 1
+        if y < bottom:
+            self._addstr(stdscr, y, 2, "Stdout", curses.color_pair(PAIR_TITLE) | curses.A_BOLD)
+            y += 1
+
+        remaining = max(0, bottom - y)
+        if remaining <= 0:
+            return
+        if stdout_text is None:
+            out_lines = ["(loading stdout...)"]
+        else:
+            out_lines = str(stdout_text).splitlines() or ["(no stdout yet)"]
+        # Tail to fit the remaining rows.
+        for line in out_lines[-remaining:]:
             self._addstr(stdscr, y, 4, self._clip(line, width - 5), 0)
             y += 1
 
@@ -463,7 +567,7 @@ class OverviewApp:
         y = height - 1
         text = self._help
         if mode == "detail":
-            text = "q:quit  Esc:back to job list  r:refresh"
+            text = "q:quit  Esc:back to job list  Del:cancel  r:refresh"
         self._addstr(stdscr, y, 0, self._clip(text.ljust(max(0, width - 1)), width), curses.color_pair(PAIR_FOOTER))
 
     def _column_widths(self, width: int) -> list[int]:

@@ -57,7 +57,8 @@ swmconsole --job-cancel <job-id>
 # Requeue a job
 swmconsole --job-requeue <job-id>
 
-# Permanently purge all jobs and related allocations (asks for confirmation)
+# Permanently purge non-running jobs (queued/finished/canceled/etc.); running jobs are kept
+# (asks for confirmation)
 swmconsole --job-purge
 ```
 
@@ -71,7 +72,7 @@ swmconsole
 swmconsole --interval 2
 ```
 
-Keys: `↑/↓` or `j/k` select a job, `Enter` show details, `Esc` back to the job list (or quit from the list), `r` refresh, `q` quit.
+Keys: `↑/↓` or `j/k` select a job, `Enter` show details (includes a screen-fitting stdout tail), `Del` cancel selected job (if not finished), `Esc` back to the job list (or quit from the list), `r` refresh, `q` quit.
 
 Top pane: cloud partitions (created `swm-*-main` partition managers), active jobs count, cloud nodes (`swm-*`). Bottom pane: all jobs (active first by newest submit time, then inactive F/C/E by newest submit time).
 

@@ -94,7 +94,7 @@ def main() -> None:
     group.add_argument("--job-list", help="Show all jobs", action="store_true")
     group.add_argument(
         "--job-purge",
-        help="Permanently purge all jobs for the authenticated user",
+        help="Permanently purge non-running jobs (queued, finished, canceled, etc.); running jobs are kept",
         action="store_true",
     )
     group.add_argument("--remote-list", help="Show remote sites", action="store_true")
@@ -254,9 +254,22 @@ def cancel_job(args: argparse.Namespace, swm_api: SwmApi) -> None:
 
 def purge_jobs(args: argparse.Namespace, swm_api: SwmApi) -> None:
     jobs = swm_api.get_jobs()
-    job_count = len(jobs) if isinstance(jobs, list) else 0
-    print(f"This will permanently purge {job_count} job(s) and related allocations from Sky Port.", file=sys.stderr)
-    answer = input("Do you really want to purge all your jobs? [y/N]: ").strip().lower()
+    if isinstance(jobs, list):
+        purge_candidates = [j for j in jobs if getattr(j, "state", None) != "R"]
+        kept_running = len(jobs) - len(purge_candidates)
+        job_count = len(purge_candidates)
+    else:
+        purge_candidates = []
+        kept_running = 0
+        job_count = 0
+    print(
+        f"This will permanently purge {job_count} non-running job(s) "
+        f"(queued/finished/canceled/etc.) and related allocations from Sky Port.",
+        file=sys.stderr,
+    )
+    if kept_running:
+        print(f"Running job(s) left untouched: {kept_running}.", file=sys.stderr)
+    answer = input("Do you really want to purge your non-running jobs? [y/N]: ").strip().lower()
     if answer not in ("y", "yes"):
         if args.yaml:
             print_as_yaml({"aborted": True, "message": "Aborted."})
