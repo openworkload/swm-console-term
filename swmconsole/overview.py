@@ -8,6 +8,7 @@ import threading
 import time
 import typing
 from enum import Enum
+from io import BytesIO
 
 from .common import (
     is_cloud_partition_manager,
@@ -22,6 +23,8 @@ from .common import (
 DEFAULT_INTERVAL = 5
 STATS_HEIGHT = 7
 FOOTER_HEIGHT = 1
+# Manual double-click window when the terminal does not report BUTTON1_DOUBLE_CLICKED.
+DOUBLE_CLICK_SEC = 0.4
 
 # Color pair ids
 PAIR_TITLE = 1
@@ -36,6 +39,10 @@ PAIR_STATE_T = 9
 PAIR_FOOTER = 10
 PAIR_ERROR = 11
 PAIR_BORDER = 12
+PAIR_BUTTON = 13
+PAIR_MODAL = 14
+PAIR_SHADOW = 15
+PAIR_MODAL_BORDER = 16
 
 
 def run_overview(swm_api: typing.Any, interval: float = DEFAULT_INTERVAL) -> None:
@@ -64,7 +71,23 @@ class OverviewApp:
         self._error: str | None = None
         self._last_refresh = 0.0
         self._refreshing = False
-        self._help = "q/Esc:quit  arrows/j/k:select  Enter:details  Del:cancel  r:refresh"
+        self._ui_height = 0
+        self._ui_width = 0
+        self._last_click_idx = -1
+        self._last_click_time = 0.0
+        # (action, x_start, x_end) for the current footer button row; y is always footer.
+        self._footer_hits: list[tuple[str, int, int]] = []
+        self._help_open = False
+        # Close button hit box inside the help modal: (y, x0, x1)
+        self._help_close_hit: tuple[int, int, int] | None = None
+        # Modal rectangle (top, left, bottom, right) exclusive bottom/right for outside-click.
+        self._help_rect: tuple[int, int, int, int] | None = None
+        # Right-click context menu on a job row.
+        self._ctx_open = False
+        self._ctx_job_id: str | None = None
+        self._ctx_hits: list[tuple[str, int, int, int]] = []  # (action, y, x0, x1)
+        self._ctx_rect: tuple[int, int, int, int] | None = None
+        self._ctx_anchor: tuple[int, int] = (0, 0)
 
     def main(self, stdscr: typing.Any) -> None:
         curses.curs_set(0)
@@ -76,6 +99,7 @@ class OverviewApp:
         except Exception:  # noqa: BLE001 - not available on all platforms
             pass
         self._init_colors()
+        self._init_mouse()
         stdscr.nodelay(True)
         # Short poll so keys are handled quickly even during background refresh.
         stdscr.timeout(50)
@@ -94,6 +118,8 @@ class OverviewApp:
                 self._request_detail_refresh()
 
             height, width = stdscr.getmaxyx()
+            self._ui_height = height
+            self._ui_width = width
             if height < 10 or width < 40:
                 stdscr.erase()
                 self._addstr(stdscr, 0, 0, "Terminal too small", curses.color_pair(PAIR_ERROR))
@@ -106,6 +132,28 @@ class OverviewApp:
                 continue
             if self._handle_key(key):
                 break
+
+    def _init_mouse(self) -> None:
+        """Enable left-click / double-click reporting when the terminal supports it."""
+        try:
+            mask = 0
+            for name in (
+                "BUTTON1_CLICKED",
+                "BUTTON1_DOUBLE_CLICKED",
+                "BUTTON1_PRESSED",
+                "BUTTON3_CLICKED",
+                "BUTTON3_PRESSED",
+                "BUTTON3_RELEASED",
+                "BUTTON4_PRESSED",
+                "BUTTON5_PRESSED",
+            ):
+                mask |= getattr(curses, name, 0)
+            if mask:
+                curses.mousemask(mask)
+            if hasattr(curses, "mouseinterval"):
+                curses.mouseinterval(int(DOUBLE_CLICK_SEC * 1000))
+        except curses.error:
+            pass
 
     def _init_colors(self) -> None:
         """NVIDIA-like palette: lime green chrome on dark, white stats."""
@@ -132,18 +180,67 @@ class OverviewApp:
         # Soft gray for terminated jobs when 256 colors are available
         dim = 244 if curses.COLORS >= 256 else white
 
+        # Header: light grey with a green tint (distinct from bright selection).
+        header_fg = black
+        header_bg = green
+        if curses.can_change_color() and curses.COLORS > 16:
+            try:
+                # Soft sage grey (~#c5d0bc).
+                curses.init_color(16, 773, 816, 737)
+                header_bg = 16
+            except curses.error:
+                header_bg = 151 if curses.COLORS >= 256 else curses.COLOR_WHITE
+        elif curses.COLORS >= 256:
+            header_bg = 151  # xterm pale green-grey
+        else:
+            header_fg = black
+            header_bg = white
+
         curses.init_pair(PAIR_TITLE, green, -1)
         curses.init_pair(PAIR_STATS, white, -1)
-        curses.init_pair(PAIR_HEADER, black, green)
+        curses.init_pair(PAIR_HEADER, header_fg, header_bg)
         curses.init_pair(PAIR_SELECTED, black, green)
         curses.init_pair(PAIR_STATE_R, green, -1)
         curses.init_pair(PAIR_STATE_Q, yellow, -1)
         curses.init_pair(PAIR_STATE_E, red, -1)
         curses.init_pair(PAIR_STATE_W, white, -1)
         curses.init_pair(PAIR_STATE_T, dim, -1)
-        curses.init_pair(PAIR_FOOTER, black, green)
+        # Footer bar matches the job-list background (terminal default).
+        curses.init_pair(PAIR_FOOTER, green, -1)
         curses.init_pair(PAIR_ERROR, red, -1)
         curses.init_pair(PAIR_BORDER, green, -1)
+        # Clickable footer buttons: dark text on sage (or white) so they read as controls.
+        button_bg = header_bg if header_bg != green else white
+        curses.init_pair(PAIR_BUTTON, black, button_bg)
+        # Help modal: blue panel with dark-blue drop shadow.
+        if curses.can_change_color() and curses.COLORS > 16:
+            try:
+                curses.init_color(18, 220, 420, 850)  # medium blue
+                curses.init_color(19, 40, 80, 280)  # dark blue shadow
+                modal_bg, shadow_bg = 18, 19
+            except curses.error:
+                modal_bg = 27 if curses.COLORS >= 256 else curses.COLOR_BLUE
+                shadow_bg = 17 if curses.COLORS >= 256 else black
+        elif curses.COLORS >= 256:
+            modal_bg = 27  # DodgerBlue3
+            shadow_bg = 17  # DarkBlue
+        else:
+            modal_bg = curses.COLOR_BLUE
+            shadow_bg = black
+        curses.init_pair(PAIR_MODAL, white, modal_bg)
+        curses.init_pair(PAIR_SHADOW, white, shadow_bg)
+        # Light gray frame on the modal blue background.
+        if curses.can_change_color() and curses.COLORS > 16:
+            try:
+                curses.init_color(20, 780, 780, 780)  # light gray
+                border_fg = 20
+            except curses.error:
+                border_fg = 250 if curses.COLORS >= 256 else white
+        elif curses.COLORS >= 256:
+            border_fg = 250
+        else:
+            border_fg = white
+        curses.init_pair(PAIR_MODAL_BORDER, border_fg, modal_bg)
 
     def _request_refresh(self) -> None:
         """Fetch overview data in a background thread (never blocks the UI)."""
@@ -275,36 +372,353 @@ class OverviewApp:
             return raw.decode("utf-8", errors="replace")
         return str(raw)
 
-    def _handle_key(self, key: int) -> bool:
-        """Return True to quit. Must stay non-blocking."""
-        if key in (ord("q"), ord("Q")):
-            return True
+    def _leave_detail(self) -> None:
+        """Return from job details to the overview job list."""
+        self._close_context_menu()
+        with self._lock:
+            self._mode = "list"
+            self._detail_job = None
+            self._detail_id = None
+            self._detail_stdout = None
 
-        if key in (ord("r"), ord("R")):
+    def _open_detail(self, job: typing.Any) -> None:
+        """Switch to detail mode for job (snapshot first, then background refresh)."""
+        self._close_context_menu()
+        job_id = getattr(job, "id", None)
+        if not job_id:
+            return
+        with self._lock:
+            self._detail_id = str(job_id)
+            self._detail_job = job
+            self._detail_stdout = None
+            self._mode = "detail"
+        self._request_detail_refresh()
+
+    def _job_index_at_row(self, y: int) -> int | None:
+        """Map screen row to job index in the list, or None if not on a job row."""
+        first_data = STATS_HEIGHT + 1
+        footer_y = max(0, self._ui_height - FOOTER_HEIGHT)
+        if y < first_data or y >= footer_y:
+            return None
+        with self._lock:
+            scroll = self._scroll
+            n_jobs = len(self._jobs)
+        job_idx = scroll + (y - first_data)
+        if 0 <= job_idx < n_jobs:
+            return job_idx
+        return None
+
+    def _footer_actions(self, mode: str) -> list[tuple[str, str]]:
+        """Return (action_id, label) pairs for the footer button bar."""
+        if mode == "detail":
+            return [
+                ("back", "Back"),
+                ("cancel", "Cancel"),
+                ("refresh", "Refresh"),
+                ("help", "Help"),
+            ]
+        return [
+            ("quit", "Quit"),
+            ("details", "Details"),
+            ("cancel", "Cancel"),
+            ("refresh", "Refresh"),
+            ("help", "Help"),
+        ]
+
+    def _help_lines(self) -> list[str]:
+        """Keyboard / mouse map shown in the help modal."""
+        return [
+            "Navigation",
+            "  Up/Down  j/k     Select job",
+            "  PgUp/PgDn        Jump 10 jobs",
+            "  Home/End         First / last job",
+            "  Click            Select job",
+            "  Mouse wheel      Move selection",
+            "  Right-click      Job menu (Cancel / Resubmit)",
+            "",
+            "Actions",
+            "  Enter            Open job details",
+            "  Double-click     Open job details",
+            "  Del              Cancel selected job",
+            "  r                Refresh",
+            "  q / Esc          Quit (list) or Back (details)",
+            "  ? / h            Open this help",
+            "",
+            "Footer buttons are clickable with the mouse.",
+            "Press Esc or click Close / outside to dismiss.",
+        ]
+
+    def _close_context_menu(self) -> None:
+        self._ctx_open = False
+        self._ctx_job_id = None
+        self._ctx_hits = []
+        self._ctx_rect = None
+
+    def _open_context_menu(self, job_idx: int, x: int, y: int) -> None:
+        with self._lock:
+            jobs = self._jobs
+            if not (0 <= job_idx < len(jobs)):
+                return
+            job = jobs[job_idx]
+            job_id = getattr(job, "id", None)
+            self._selected = job_idx
+        if not job_id:
+            return
+        self._help_open = False
+        self._ctx_open = True
+        self._ctx_job_id = str(job_id)
+        self._ctx_anchor = (x, y)
+
+    def _job_script_content(self, job: typing.Any) -> str | None:
+        """Return job script text from a Job object (full get_job includes script_content)."""
+        script = getattr(job, "script_content", None)
+        if script:
+            return str(script)
+        extra = getattr(job, "additional_properties", None) or {}
+        if isinstance(extra, dict) and extra.get("script_content"):
+            return str(extra["script_content"])
+        if hasattr(job, "get") and "script_content" in job:
+            return str(job["script_content"])
+        return None
+
+    def _resubmit_job(self, job_id: str) -> None:
+        """Submit a new job using the same script_content as job_id."""
+
+        def worker() -> None:
+            try:
+                with self._lock:
+                    self._error = f"Resubmitting job {job_id}..."
+                detail = self._api.get_job(job_id)
+                if detail is None:
+                    with self._lock:
+                        self._error = f"Resubmit failed: job {job_id} not found"
+                    return
+                script = self._job_script_content(detail)
+                if not script:
+                    with self._lock:
+                        self._error = f"Resubmit failed: no script_content for {job_id}"
+                    return
+                result = self._api.submit_job(BytesIO(script.encode("utf-8")))
+                new_id = None
+                if result is not None:
+                    payload = getattr(result, "payload", None)
+                    if payload is not None:
+                        raw = payload.read()
+                        if isinstance(raw, bytes):
+                            new_id = raw.decode("utf-8", errors="replace").strip()
+                        elif raw:
+                            new_id = str(raw).strip()
+                with self._lock:
+                    if new_id:
+                        self._error = f"Resubmitted {job_id} as {new_id}"
+                    else:
+                        self._error = f"Resubmitted {job_id} (no id in response)"
+            except Exception as exc:  # noqa: BLE001
+                with self._lock:
+                    self._error = f"Resubmit failed for {job_id}: {exc}"
+            self._request_refresh()
+
+        threading.Thread(target=worker, name="swm-overview-resubmit", daemon=True).start()
+
+    def _run_context_action(self, action: str) -> bool:
+        job_id = self._ctx_job_id
+        self._close_context_menu()
+        if not job_id:
+            return False
+        if action == "cancel":
+            with self._lock:
+                jobs = self._jobs
+                job = next((j for j in jobs if str(getattr(j, "id", "")) == job_id), None)
+            self._cancel_job_if_not_finished(job)
+            return False
+        if action == "resubmit":
+            self._resubmit_job(job_id)
+            return False
+        return False
+
+    def _run_action(self, action: str) -> bool:
+        """Run a footer/keyboard action. Return True to quit the overview."""
+        if action == "help":
+            self._close_context_menu()
+            self._help_open = True
+            return False
+        if action == "quit":
+            return True
+        if action == "back":
+            self._leave_detail()
+            return False
+        if action == "refresh":
             if self._mode == "detail":
                 self._request_detail_refresh()
             else:
                 self._request_refresh()
             return False
-
-        if self._mode == "detail":
-            if key in (27, curses.KEY_BACKSPACE, ord("b"), ord("B")):  # Esc / back
-                with self._lock:
-                    self._mode = "list"
-                    self._detail_job = None
-                    self._detail_id = None
-                    self._detail_stdout = None
-                # Keep showing the cached list; next interval refresh updates it.
-                return False
-            if key == curses.KEY_DC:  # Delete -- cancel current detail job if not finished
-                with self._lock:
+        if action == "details":
+            with self._lock:
+                jobs = self._jobs
+                selected = self._selected
+            if jobs and 0 <= selected < len(jobs):
+                self._open_detail(jobs[selected])
+            return False
+        if action == "cancel":
+            with self._lock:
+                if self._mode == "detail":
                     job = self._detail_job
-                self._cancel_job_if_not_finished(job)
-                return False
+                else:
+                    jobs = self._jobs
+                    selected = self._selected
+                    job = jobs[selected] if jobs and 0 <= selected < len(jobs) else None
+            self._cancel_job_if_not_finished(job)
+            return False
+        return False
+
+    def _footer_button_at(self, x: int, y: int) -> str | None:
+        """Return action id if (x, y) hits a footer button."""
+        footer_y = max(0, self._ui_height - FOOTER_HEIGHT)
+        if y != footer_y:
+            return None
+        for action, x0, x1 in self._footer_hits:
+            if x0 <= x < x1:
+                return action
+        return None
+
+    def _ctx_action_at(self, x: int, y: int) -> str | None:
+        for action, cy, x0, x1 in self._ctx_hits:
+            if y == cy and x0 <= x < x1:
+                return action
+        return None
+
+    def _handle_mouse(self) -> bool:
+        """Handle mouse clicks. Return True to quit."""
+        try:
+            _id, x, y, _z, bstate = curses.getmouse()
+        except curses.error:
             return False
 
-        if key == 27:  # Esc on the job list exits the overview
-            return True
+        left_clicked = bool(
+            (getattr(curses, "BUTTON1_CLICKED", 0) & bstate)
+            or (getattr(curses, "BUTTON1_PRESSED", 0) & bstate)
+            or (getattr(curses, "BUTTON1_DOUBLE_CLICKED", 0) & bstate)
+        )
+        right_clicked = bool(
+            (getattr(curses, "BUTTON3_CLICKED", 0) & bstate)
+            or (getattr(curses, "BUTTON3_PRESSED", 0) & bstate)
+            or (getattr(curses, "BUTTON3_RELEASED", 0) & bstate)
+        )
+
+        if self._help_open:
+            if not left_clicked:
+                return False
+            if self._help_close_hit is not None:
+                cy, x0, x1 = self._help_close_hit
+                if y == cy and x0 <= x < x1:
+                    self._help_open = False
+                    return False
+            if self._help_rect is not None:
+                top, left, bottom, right = self._help_rect
+                if not (top <= y < bottom and left <= x < right):
+                    self._help_open = False
+            return False
+
+        if self._ctx_open:
+            if right_clicked or left_clicked:
+                action = self._ctx_action_at(x, y)
+                if action is not None:
+                    return self._run_context_action(action)
+                if self._ctx_rect is not None:
+                    top, left, bottom, right = self._ctx_rect
+                    if not (top <= y < bottom and left <= x < right):
+                        self._close_context_menu()
+            return False
+
+        # Wheel scroll on the job list (when reported as button 4/5).
+        btn4 = getattr(curses, "BUTTON4_PRESSED", 0)
+        btn5 = getattr(curses, "BUTTON5_PRESSED", 0)
+        if self._mode == "list":
+            if btn4 and bstate & btn4:
+                with self._lock:
+                    if self._selected > 0:
+                        self._selected -= 1
+                return False
+            if btn5 and bstate & btn5:
+                with self._lock:
+                    if self._selected < max(0, len(self._jobs) - 1):
+                        self._selected += 1
+                return False
+
+        if right_clicked and self._mode == "list":
+            job_idx = self._job_index_at_row(y)
+            if job_idx is not None:
+                self._open_context_menu(job_idx, x, y)
+            return False
+
+        if not left_clicked:
+            return False
+
+        action = self._footer_button_at(x, y)
+        if action is not None:
+            return self._run_action(action)
+
+        if self._mode != "list":
+            return False
+
+        job_idx = self._job_index_at_row(y)
+        if job_idx is None:
+            return False
+
+        double = bool(getattr(curses, "BUTTON1_DOUBLE_CLICKED", 0) & bstate)
+        now = time.monotonic()
+        if not double and job_idx == self._last_click_idx and now - self._last_click_time <= DOUBLE_CLICK_SEC:
+            double = True
+
+        with self._lock:
+            jobs = self._jobs
+            self._selected = job_idx
+        self._last_click_idx = job_idx
+        self._last_click_time = 0.0 if double else now
+
+        if double and jobs and 0 <= job_idx < len(jobs):
+            self._open_detail(jobs[job_idx])
+        return False
+
+    def _handle_key(self, key: int) -> bool:
+        """Return True to quit. Must stay non-blocking."""
+        if key == curses.KEY_MOUSE:
+            return self._handle_mouse()
+
+        if self._help_open:
+            if key in (ord("q"), ord("Q"), 27, curses.KEY_ENTER, 10, 13, ord(" "), ord("h"), ord("H"), ord("?")):
+                self._help_open = False
+            return False
+
+        if self._ctx_open:
+            if key in (27, ord("q"), ord("Q")):
+                self._close_context_menu()
+                return False
+            if key in (ord("c"), ord("C")):
+                return self._run_context_action("cancel")
+            if key in (ord("r"), ord("R")):
+                # In menu, r = resubmit (not refresh).
+                return self._run_context_action("resubmit")
+            if key in (curses.KEY_ENTER, 10, 13):
+                return self._run_context_action("cancel")
+            return False
+
+        if key in (ord("?"), ord("h"), ord("H")):
+            return self._run_action("help")
+
+        if key in (ord("r"), ord("R")):
+            return self._run_action("refresh")
+
+        if self._mode == "detail":
+            if key in (ord("q"), ord("Q"), 27, curses.KEY_BACKSPACE, ord("b"), ord("B")):
+                return self._run_action("back")
+            if key == curses.KEY_DC:
+                return self._run_action("cancel")
+            return False
+
+        if key in (ord("q"), ord("Q"), 27):
+            return self._run_action("quit")
 
         with self._lock:
             jobs = self._jobs
@@ -331,20 +745,9 @@ class OverviewApp:
             with self._lock:
                 self._selected = max(0, len(self._jobs) - 1)
         elif key in (curses.KEY_ENTER, 10, 13):
-            if jobs and 0 <= selected < len(jobs):
-                job = jobs[selected]
-                job_id = getattr(job, "id", None)
-                if job_id:
-                    with self._lock:
-                        self._detail_id = str(job_id)
-                        self._detail_job = job
-                        self._detail_stdout = None
-                        self._mode = "detail"
-                    # Fetch fuller details in the background; UI already shows snapshot.
-                    self._request_detail_refresh()
-        elif key == curses.KEY_DC:  # Delete -- cancel selected job if not finished
-            if jobs and 0 <= selected < len(jobs):
-                self._cancel_job_if_not_finished(jobs[selected])
+            return self._run_action("details")
+        elif key == curses.KEY_DC:
+            return self._run_action("cancel")
         return False
 
     def _cancel_job_if_not_finished(self, job: typing.Any | None) -> None:
@@ -416,7 +819,120 @@ class OverviewApp:
         else:
             self._draw_job_table(stdscr, height, width, jobs, selected, scroll)
         self._draw_footer(stdscr, height, width, mode)
+        if self._ctx_open:
+            self._draw_context_menu(stdscr, height, width)
+        else:
+            self._ctx_hits = []
+            self._ctx_rect = None
+        if self._help_open:
+            self._draw_help_modal(stdscr, height, width)
+        else:
+            self._help_close_hit = None
+            self._help_rect = None
         stdscr.refresh()
+
+    def _draw_modal_chrome(
+        self,
+        stdscr: typing.Any,
+        top: int,
+        left: int,
+        bottom: int,
+        right: int,
+        height: int,
+        width: int,
+    ) -> None:
+        """Fill, tight drop shadow, and light-gray border shared by help and context menu."""
+        box_w = right - left
+        box_h = bottom - top
+        shadow = curses.color_pair(PAIR_SHADOW)
+        modal = curses.color_pair(PAIR_MODAL)
+        border = curses.color_pair(PAIR_MODAL_BORDER)
+
+        # Small offset so the shadow sits close to the panel.
+        sh_dy, sh_dx = 1, 1
+        for sy in range(top + sh_dy, min(bottom + sh_dy, height - 1)):
+            sx = left + sh_dx
+            n = max(0, min(box_w, width - sx - 1))
+            if n > 0:
+                self._addstr(stdscr, sy, sx, " " * n, shadow)
+
+        for row in range(top, bottom):
+            self._addstr(stdscr, row, left, " " * max(0, box_w - 1), modal)
+
+        try:
+            stdscr.attron(border)
+            if bottom - 1 < height and right - 1 < width:
+                stdscr.vline(top, left, curses.ACS_VLINE, box_h)
+                stdscr.vline(top, right - 1, curses.ACS_VLINE, box_h)
+                stdscr.hline(top, left, curses.ACS_HLINE, box_w)
+                stdscr.hline(bottom - 1, left, curses.ACS_HLINE, box_w)
+                stdscr.addch(top, left, curses.ACS_ULCORNER)
+                stdscr.addch(top, right - 1, curses.ACS_URCORNER)
+                stdscr.addch(bottom - 1, left, curses.ACS_LLCORNER)
+                stdscr.addch(bottom - 1, right - 1, curses.ACS_LRCORNER)
+            stdscr.attroff(border)
+        except curses.error:
+            pass
+
+    def _draw_context_menu(self, stdscr: typing.Any, height: int, width: int) -> None:
+        """Popup under the pointer: Cancel / Resubmit (same style as the help window)."""
+        items = [("cancel", "Cancel"), ("resubmit", "Resubmit")]
+        label_w = max(len(label) for _, label in items) + 2
+        box_w = label_w + 2
+        box_h = len(items) + 2
+        ax, ay = self._ctx_anchor
+        # Prefer below-right of the pointer; clamp into the usable pane.
+        top = min(max(STATS_HEIGHT, ay + 1), max(STATS_HEIGHT, height - FOOTER_HEIGHT - box_h))
+        left = min(max(0, ax), max(0, width - box_w - 1))
+        bottom = top + box_h
+        right = left + box_w
+        self._ctx_rect = (top, left, bottom, right)
+
+        self._draw_modal_chrome(stdscr, top, left, bottom, right, height, width)
+        modal = curses.color_pair(PAIR_MODAL)
+
+        hits: list[tuple[str, int, int, int]] = []
+        for i, (action, label) in enumerate(items):
+            row = top + 1 + i
+            text = f" {label:<{label_w - 1}}"
+            self._addstr(stdscr, row, left + 1, self._clip(text, box_w - 2), modal | curses.A_BOLD)
+            hits.append((action, row, left + 1, left + 1 + len(text.rstrip()) + 1))
+        self._ctx_hits = hits
+
+    def _draw_help_modal(self, stdscr: typing.Any, height: int, width: int) -> None:
+        """Centered help dialog with a drop shadow over the current view."""
+        lines = self._help_lines()
+        title = "Help"
+        close_label = "[Close]"
+        # +6: top border, title, blank, body, blank before Close, Close, bottom border
+        inner_w = max(len(title), len(close_label), *(len(ln) for ln in lines)) + 4
+        box_h = len(lines) + 6
+        box_w = min(inner_w + 2, max(20, width - 4))
+        box_h = min(box_h, max(8, height - 4))
+
+        top = max(1, (height - box_h) // 2)
+        left = max(1, (width - box_w) // 2)
+        bottom = top + box_h
+        right = left + box_w
+        self._help_rect = (top, left, bottom, right)
+
+        self._draw_modal_chrome(stdscr, top, left, bottom, right, height, width)
+        modal = curses.color_pair(PAIR_MODAL)
+        title_attr = curses.color_pair(PAIR_MODAL) | curses.A_BOLD
+        btn = curses.color_pair(PAIR_BUTTON) | curses.A_BOLD
+
+        self._addstr(stdscr, top + 1, left + 2, self._clip(title, box_w - 4), title_attr)
+
+        close_y = bottom - 2
+        body_top = top + 3
+        # Leave a blank line above the Close button.
+        max_body = max(0, close_y - 1 - body_top)
+        for i, line in enumerate(lines[:max_body]):
+            self._addstr(stdscr, body_top + i, left + 2, self._clip(line, box_w - 4), modal)
+
+        close_x = left + max(2, (box_w - len(close_label)) // 2)
+        self._addstr(stdscr, close_y, close_x, close_label, btn)
+        self._help_close_hit = (close_y, close_x, close_x + len(close_label))
 
     def _draw_stats(
         self,
@@ -565,10 +1081,21 @@ class OverviewApp:
 
     def _draw_footer(self, stdscr: typing.Any, height: int, width: int, mode: str) -> None:
         y = height - 1
-        text = self._help
-        if mode == "detail":
-            text = "q:quit  Esc:back to job list  Del:cancel  r:refresh"
-        self._addstr(stdscr, y, 0, self._clip(text.ljust(max(0, width - 1)), width), curses.color_pair(PAIR_FOOTER))
+        bar = curses.color_pair(PAIR_FOOTER)
+        btn = curses.color_pair(PAIR_BUTTON) | curses.A_BOLD
+        # Fill the footer bar, then paint clickable buttons on top.
+        self._addstr(stdscr, y, 0, " " * max(0, width - 1), bar)
+
+        hits: list[tuple[str, int, int]] = []
+        x = 1
+        for action, label in self._footer_actions(mode):
+            text = f"[{label}]"
+            if x + len(text) >= width - 1:
+                break
+            self._addstr(stdscr, y, x, text, btn)
+            hits.append((action, x, x + len(text)))
+            x += len(text) + 1
+        self._footer_hits = hits
 
     def _column_widths(self, width: int) -> list[int]:
         # Prefer readable ID + state; give leftover to Details.

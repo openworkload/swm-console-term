@@ -72,7 +72,7 @@ swmconsole
 swmconsole --interval 2
 ```
 
-Keys: `↑/↓` or `j/k` select a job, `Enter` show details (includes a screen-fitting stdout tail), `Del` cancel selected job (if not finished), `Esc` back to the job list (or quit from the list), `r` refresh, `q` quit.
+Keys: `↑/↓` or `j/k` or click select a job; right-click opens Cancel/Resubmit menu; `Enter` or double-click open details; footer buttons (`Quit` / `Details` / `Cancel` / `Refresh` / `Help`, or `Back` in details) are clickable; `?`/`h` open the help modal; `Del` cancel, `Esc`/`q` back or quit, `r` refresh. Mouse wheel scrolls the selection when the terminal reports it.
 
 Top pane: cloud partitions (created `swm-*-main` partition managers), active jobs count, cloud nodes (`swm-*`). Bottom pane: all jobs (active first by newest submit time, then inactive F/C/E by newest submit time).
 
