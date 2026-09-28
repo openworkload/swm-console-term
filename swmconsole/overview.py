@@ -11,6 +11,7 @@ from enum import Enum
 from io import BytesIO
 
 from .common import (
+    copy_to_clipboard,
     is_cloud_partition_manager,
     is_created_cloud_node,
     is_job_active,
@@ -21,8 +22,12 @@ from .common import (
 )
 
 DEFAULT_INTERVAL = 5
-STATS_HEIGHT = 7
-FOOTER_HEIGHT = 1
+# Top chrome: border, title, border.
+STATS_HEIGHT = 3
+STATUS_HEIGHT = 1
+BUTTONS_HEIGHT = 1
+# Status line + footer button hints reserved at the bottom of the screen.
+FOOTER_HEIGHT = STATUS_HEIGHT + BUTTONS_HEIGHT
 # Manual double-click window when the terminal does not report BUTTON1_DOUBLE_CLICKED.
 DOUBLE_CLICK_SEC = 0.4
 
@@ -43,6 +48,8 @@ PAIR_BUTTON = 13
 PAIR_MODAL = 14
 PAIR_SHADOW = 15
 PAIR_MODAL_BORDER = 16
+PAIR_STATUS = 17
+PAIR_STATUS_ERROR = 18
 
 
 def run_overview(swm_api: typing.Any, interval: float = DEFAULT_INTERVAL) -> None:
@@ -77,6 +84,8 @@ class OverviewApp:
         self._last_click_time = 0.0
         # (action, x_start, x_end) for the current footer button row; y is always footer.
         self._footer_hits: list[tuple[str, int, int]] = []
+        self._status: str | None = None
+        self._status_until = 0.0
         self._help_open = False
         # Close button hit box inside the help modal: (y, x0, x1)
         self._help_close_hit: tuple[int, int, int] | None = None
@@ -134,24 +143,13 @@ class OverviewApp:
                 break
 
     def _init_mouse(self) -> None:
-        """Enable left-click / double-click reporting when the terminal supports it."""
+        """Leave terminal mouse tracking off so IP text can be drag-selected.
+
+        Job list navigation, details, cancel, and copy use the keyboard
+        (and footer key equivalents). Press c to copy the selected job IP(s).
+        """
         try:
-            mask = 0
-            for name in (
-                "BUTTON1_CLICKED",
-                "BUTTON1_DOUBLE_CLICKED",
-                "BUTTON1_PRESSED",
-                "BUTTON3_CLICKED",
-                "BUTTON3_PRESSED",
-                "BUTTON3_RELEASED",
-                "BUTTON4_PRESSED",
-                "BUTTON5_PRESSED",
-            ):
-                mask |= getattr(curses, name, 0)
-            if mask:
-                curses.mousemask(mask)
-            if hasattr(curses, "mouseinterval"):
-                curses.mouseinterval(int(DOUBLE_CLICK_SEC * 1000))
+            curses.mousemask(0)
         except curses.error:
             pass
 
@@ -209,6 +207,19 @@ class OverviewApp:
         curses.init_pair(PAIR_FOOTER, green, -1)
         curses.init_pair(PAIR_ERROR, red, -1)
         curses.init_pair(PAIR_BORDER, green, -1)
+        # Status line: dark gray bar, slightly brighter than the default list bg.
+        status_bg = curses.COLOR_BLACK
+        if curses.can_change_color() and curses.COLORS > 16:
+            try:
+                # ~#3a3a3a -- darker than header sage, brighter than pure black.
+                curses.init_color(21, 230, 230, 230)
+                status_bg = 21
+            except curses.error:
+                status_bg = 238 if curses.COLORS >= 256 else curses.COLOR_BLACK
+        elif curses.COLORS >= 256:
+            status_bg = 238  # xterm Grey27
+        curses.init_pair(PAIR_STATUS, white, status_bg)
+        curses.init_pair(PAIR_STATUS_ERROR, red, status_bg)
         # Clickable footer buttons: dark text on sage (or white) so they read as controls.
         button_bg = header_bg if header_bg != green else white
         curses.init_pair(PAIR_BUTTON, black, button_bg)
@@ -409,43 +420,41 @@ class OverviewApp:
         return None
 
     def _footer_actions(self, mode: str) -> list[tuple[str, str]]:
-        """Return (action_id, label) pairs for the footer button bar."""
+        """Return (key_hint, label) pairs for the footer bar."""
         if mode == "detail":
             return [
-                ("back", "Back"),
-                ("cancel", "Cancel"),
-                ("refresh", "Refresh"),
-                ("help", "Help"),
+                ("q", "Back"),
+                ("Del", "Cancel"),
+                ("r", "Refresh"),
+                ("?", "Help"),
             ]
         return [
-            ("quit", "Quit"),
-            ("details", "Details"),
-            ("cancel", "Cancel"),
-            ("refresh", "Refresh"),
-            ("help", "Help"),
+            ("q", "Quit"),
+            ("Enter", "Details"),
+            ("Del", "Cancel"),
+            ("r", "Refresh"),
+            ("?", "Help"),
         ]
 
     def _help_lines(self) -> list[str]:
-        """Keyboard / mouse map shown in the help modal."""
+        """Keyboard map shown in the help modal."""
         return [
             "Navigation",
             "  Up/Down  j/k     Select job",
             "  PgUp/PgDn        Jump 10 jobs",
             "  Home/End         First / last job",
-            "  Click            Select job",
-            "  Mouse wheel      Move selection",
-            "  Right-click      Job menu (Cancel / Resubmit)",
             "",
             "Actions",
             "  Enter            Open job details",
-            "  Double-click     Open job details",
             "  Del              Cancel selected job",
+            "  c                Copy main / node IP(s)",
             "  r                Refresh",
             "  q / Esc          Quit (list) or Back (details)",
             "  ? / h            Open this help",
             "",
-            "Footer buttons are clickable with the mouse.",
-            "Press Esc or click Close / outside to dismiss.",
+            "IP addresses are normal text: drag-select with",
+            "the mouse to copy, or press c for clipboard.",
+            "Press Esc to dismiss this help.",
         ]
 
     def _close_context_menu(self) -> None:
@@ -574,13 +583,49 @@ class OverviewApp:
 
     def _footer_button_at(self, x: int, y: int) -> str | None:
         """Return action id if (x, y) hits a footer button."""
-        footer_y = max(0, self._ui_height - FOOTER_HEIGHT)
-        if y != footer_y:
+        buttons_y = max(0, self._ui_height - BUTTONS_HEIGHT)
+        if y != buttons_y:
             return None
         for action, x0, x1 in self._footer_hits:
             if x0 <= x < x1:
                 return action
         return None
+
+    def _flash_status(self, msg: str, seconds: float = 2.5) -> None:
+        self._status = msg
+        self._status_until = time.monotonic() + seconds
+
+    def _copy_ip(self, ip: str) -> None:
+        if copy_to_clipboard(ip):
+            self._flash_status(f"Copied IP: {ip}")
+        else:
+            self._flash_status(f"Copy failed (select manually): {ip}")
+
+    def _copy_visible_ips(self) -> None:
+        """Copy main IP (list) or all node IPs (detail) for the current job."""
+        with self._lock:
+            mode = self._mode
+            if mode == "detail":
+                job = self._detail_job
+            else:
+                jobs = self._jobs
+                selected = self._selected
+                job = jobs[selected] if jobs and 0 <= selected < len(jobs) else None
+        if job is None:
+            self._flash_status("No job to copy IP from")
+            return
+        if mode == "detail":
+            ips = [str(ip) for ip in (getattr(job, "node_ips", None) or []) if ip]
+            if not ips:
+                main = main_node_ip(job)
+                ips = [main] if main else []
+            text = ", ".join(ips)
+        else:
+            text = main_node_ip(job)
+        if not text:
+            self._flash_status("No node IP for this job")
+            return
+        self._copy_ip(text)
 
     def _ctx_action_at(self, x: int, y: int) -> str | None:
         for action, cy, x0, x1 in self._ctx_hits:
@@ -710,6 +755,10 @@ class OverviewApp:
         if key in (ord("r"), ord("R")):
             return self._run_action("refresh")
 
+        if key in (ord("c"), ord("C")):
+            self._copy_visible_ips()
+            return False
+
         if self._mode == "detail":
             if key in (ord("q"), ord("Q"), 27, curses.KEY_BACKSPACE, ord("b"), ord("B")):
                 return self._run_action("back")
@@ -813,11 +862,26 @@ class OverviewApp:
             self._scroll = scroll
 
         stdscr.erase()
-        self._draw_stats(stdscr, width, partitions, cloud_nodes, active_job_count, mode, error, refreshing)
+        status = self._status if time.monotonic() < self._status_until else None
+        if status is None:
+            self._status = None
+        self._draw_stats(stdscr, width)
         if mode == "detail":
             self._draw_detail(stdscr, height, width, detail_job, detail_stdout)
         else:
             self._draw_job_table(stdscr, height, width, jobs, selected, scroll)
+        self._draw_status_line(
+            stdscr,
+            height,
+            width,
+            mode,
+            error,
+            refreshing,
+            status,
+            partitions,
+            cloud_nodes,
+            active_job_count,
+        )
         self._draw_footer(stdscr, height, width, mode)
         if self._ctx_open:
             self._draw_context_menu(stdscr, height, width)
@@ -934,40 +998,69 @@ class OverviewApp:
         self._addstr(stdscr, close_y, close_x, close_label, btn)
         self._help_close_hit = (close_y, close_x, close_x + len(close_label))
 
-    def _draw_stats(
-        self,
-        stdscr: typing.Any,
-        width: int,
-        partitions: int,
-        cloud_nodes: int,
-        active_jobs: int,
-        mode: str,
-        error: str | None,
-        refreshing: bool,
-    ) -> None:
+    def _draw_stats(self, stdscr: typing.Any, width: int) -> None:
         border = curses.color_pair(PAIR_BORDER) | curses.A_BOLD
         title = curses.color_pair(PAIR_TITLE) | curses.A_BOLD
-        stats = curses.color_pair(PAIR_STATS) | curses.A_BOLD
 
         self._hline(stdscr, 0, 0, width, border)
         self._addstr(stdscr, 1, 2, "Sky Port Overview", title)
-        status = "updating..." if refreshing else f"every {self._interval:g}s"
-        self._addstr(stdscr, 1, max(2, width - len(status) - 2), status, curses.color_pair(PAIR_TITLE))
+        self._hline(stdscr, STATS_HEIGHT - 1, 0, width, border)
 
-        line = (
-            f"  Cloud partitions: {partitions}    "
-            f"Active jobs: {active_jobs}    "
+    def _status_message(
+        self,
+        mode: str,
+        error: str | None,
+        refreshing: bool,
+        status_msg: str | None,
+        partitions: int,
+        cloud_nodes: int,
+        active_jobs: int,
+    ) -> tuple[str, str, int]:
+        """Return (left_text, right_text, color_pair) for the bottom status line.
+
+        ``right_text`` is the refresh/update label (drawn right-aligned).
+        """
+        refresh_lbl = "updating..." if refreshing else f"every {self._interval:g}s"
+        stats = (
+            f"Cloud partitions: {partitions}  "
+            f"Active jobs: {active_jobs}  "
             f"Cloud nodes: {cloud_nodes}"
         )
-        self._addstr(stdscr, 3, 0, self._clip(line, width), stats)
-
         if error:
-            self._addstr(stdscr, 4, 2, self._clip(f"Error: {error}", width - 2), curses.color_pair(PAIR_ERROR))
+            left, pair = f"Error: {error}", PAIR_STATUS_ERROR
+        elif status_msg:
+            left, pair = status_msg, PAIR_STATUS
         else:
-            mode_label = "Job details" if mode == "detail" else "All jobs"
-            self._addstr(stdscr, 4, 2, self._clip(mode_label, width - 2), curses.color_pair(PAIR_TITLE))
+            left = "Job details" if mode == "detail" else "All jobs"
+            pair = PAIR_STATUS
+        return f"{left}  |  {stats}", refresh_lbl, pair
 
-        self._hline(stdscr, STATS_HEIGHT - 1, 0, width, border)
+    def _draw_status_line(
+        self,
+        stdscr: typing.Any,
+        height: int,
+        width: int,
+        mode: str,
+        error: str | None,
+        refreshing: bool,
+        status_msg: str | None,
+        partitions: int,
+        cloud_nodes: int,
+        active_jobs: int,
+    ) -> None:
+        """One line above the footer buttons: mode, stats, refresh, errors, flashes."""
+        y = height - FOOTER_HEIGHT
+        left, right, pair = self._status_message(
+            mode, error, refreshing, status_msg, partitions, cloud_nodes, active_jobs
+        )
+        attr = curses.color_pair(pair) | curses.A_BOLD
+        self._addstr(stdscr, y, 0, " " * max(0, width - 1), attr)
+        # Leave room for a space + right label so left never overlaps it.
+        right_w = len(right)
+        left_max = max(0, width - 2 - right_w - 1)
+        self._addstr(stdscr, y, 1, self._clip(left, left_max), attr)
+        if right_w and width > right_w + 1:
+            self._addstr(stdscr, y, width - 1 - right_w, right, attr)
 
     def _draw_job_table(
         self,
@@ -996,22 +1089,24 @@ class OverviewApp:
         end = min(len(jobs), scroll + visible)
         for view_idx, job_idx in enumerate(range(scroll, end)):
             job = jobs[job_idx]
+            ip = main_node_ip(job)
             row = [
                 str(job.id),
                 str(job.submit_time or ""),
                 str(job.start_time or ""),
                 str(job.end_time or ""),
-                main_node_ip(job),
+                ip,
                 self._state_str(job),
                 truncate_details(job.state_details, max_len=max(10, widths[-1])),
             ]
             line = self._clip(self._format_row(row, widths), width)
             y = first_data + view_idx
             if job_idx == selected:
-                self._addstr(stdscr, y, 0, line.ljust(width - 1), curses.color_pair(PAIR_SELECTED) | curses.A_BOLD)
+                base_attr = curses.color_pair(PAIR_SELECTED) | curses.A_BOLD
+                self._addstr(stdscr, y, 0, line.ljust(width - 1), base_attr)
             else:
-                attr = self._state_attr(job)
-                self._addstr(stdscr, y, 0, line, attr)
+                base_attr = self._state_attr(job)
+                self._addstr(stdscr, y, 0, line, base_attr)
 
     def _draw_detail(
         self,
@@ -1028,15 +1123,17 @@ class OverviewApp:
             return
 
         details = job.state_details or ""
+        node_ips = ", ".join(str(ip) for ip in (job.node_ips or []) if ip)
         rows = [
             ("ID", str(job.id)),
             ("Submit", str(job.submit_time or "")),
             ("Start", str(job.start_time or "")),
             ("End", str(job.end_time or "")),
-            ("Node IPs", ", ".join(job.node_ips or [])),
+            ("Node IPs", node_ips),
             ("State", self._state_str(job)),
         ]
         label_w = 10
+        value_x = 2 + label_w + 2
         for label, value in rows:
             if y >= bottom - 1:
                 break
@@ -1044,8 +1141,8 @@ class OverviewApp:
             self._addstr(
                 stdscr,
                 y,
-                2 + label_w + 2,
-                self._clip(value, width - label_w - 5),
+                value_x,
+                self._clip(str(value), width - label_w - 5),
                 self._state_attr(job) if label == "State" else 0,
             )
             y += 1
@@ -1080,22 +1177,15 @@ class OverviewApp:
             y += 1
 
     def _draw_footer(self, stdscr: typing.Any, height: int, width: int, mode: str) -> None:
-        y = height - 1
+        y = height - BUTTONS_HEIGHT
         bar = curses.color_pair(PAIR_FOOTER)
-        btn = curses.color_pair(PAIR_BUTTON) | curses.A_BOLD
-        # Fill the footer bar, then paint clickable buttons on top.
         self._addstr(stdscr, y, 0, " " * max(0, width - 1), bar)
 
-        hits: list[tuple[str, int, int]] = []
-        x = 1
-        for action, label in self._footer_actions(mode):
-            text = f"[{label}]"
-            if x + len(text) >= width - 1:
-                break
-            self._addstr(stdscr, y, x, text, btn)
-            hits.append((action, x, x + len(text)))
-            x += len(text) + 1
-        self._footer_hits = hits
+        # Keyboard hints only (mouse tracking is off so text stays selectable).
+        self._footer_hits = []
+        parts = [f"{label} ({key})" for key, label in self._footer_actions(mode)]
+        text = "  ".join(parts)
+        self._addstr(stdscr, y, 1, self._clip(text, width - 2), bar | curses.A_BOLD)
 
     def _column_widths(self, width: int) -> list[int]:
         # Prefer readable ID + state; give leftover to Details.

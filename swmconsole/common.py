@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import base64
+import shutil
+import subprocess
 import typing
 from enum import Enum
 
@@ -71,6 +74,40 @@ def main_node_ip(job: typing.Any) -> str:
     if not ips:
         return ""
     return str(ips[0])
+
+
+def copy_to_clipboard(text: str) -> bool:
+    """Copy text to the system clipboard. Returns True on success.
+
+    Tries wl-copy / xclip / xsel / pbcopy, then OSC 52 (works in many
+    terminals over SSH when the client allows clipboard escapes).
+    """
+    if not text:
+        return False
+    payload = text.encode("utf-8")
+    commands = []
+    if shutil.which("wl-copy"):
+        commands.append(["wl-copy"])
+    if shutil.which("xclip"):
+        commands.append(["xclip", "-selection", "clipboard"])
+    if shutil.which("xsel"):
+        commands.append(["xsel", "--clipboard", "--input"])
+    if shutil.which("pbcopy"):
+        commands.append(["pbcopy"])
+    for cmd in commands:
+        try:
+            subprocess.run(cmd, input=payload, check=True, timeout=2)
+            return True
+        except (OSError, subprocess.SubprocessError):
+            continue
+    try:
+        b64 = base64.b64encode(payload).decode("ascii")
+        with open("/dev/tty", "w", encoding="utf-8") as tty:
+            tty.write(f"\033]52;c;{b64}\a")
+            tty.flush()
+        return True
+    except OSError:
+        return False
 
 
 def truncate_details(details: typing.Optional[str], max_len: int = 50) -> str:
