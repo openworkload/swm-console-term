@@ -363,7 +363,7 @@ class OverviewApp:
                 self._detail_stdout = None
 
     def _read_job_stdout(self, job_id: str) -> str:
-        """Fetch job stdout via API; return decoded text or a short status string."""
+        """Fetch job stdout via API (script log + Task N sections) or a status string."""
         try:
             file_obj = self._api.get_job_stdout(job_id)
         except Exception as exc:  # noqa: BLE001 - show in detail pane
@@ -425,6 +425,7 @@ class OverviewApp:
             return [
                 ("q", "Back"),
                 ("Del", "Cancel"),
+                ("s", "Submit"),
                 ("r", "Refresh"),
                 ("?", "Help"),
             ]
@@ -432,6 +433,7 @@ class OverviewApp:
             ("q", "Quit"),
             ("Enter", "Details"),
             ("Del", "Cancel"),
+            ("s", "Submit"),
             ("r", "Refresh"),
             ("?", "Help"),
         ]
@@ -447,6 +449,7 @@ class OverviewApp:
             "Actions",
             "  Enter            Open job details",
             "  Del              Cancel selected job",
+            "  s                Resubmit selected job script",
             "  c                Copy main / node IP(s)",
             "  r                Refresh",
             "  q / Esc          Quit (list) or Back (details)",
@@ -490,13 +493,25 @@ class OverviewApp:
             return str(job["script_content"])
         return None
 
+    def _selected_job_id(self) -> str | None:
+        """Return the selected job id (list selection or open detail)."""
+        with self._lock:
+            if self._mode == "detail":
+                job_id = self._detail_id or getattr(self._detail_job, "id", None)
+                return str(job_id) if job_id else None
+            jobs = self._jobs
+            selected = self._selected
+            if jobs and 0 <= selected < len(jobs):
+                job_id = getattr(jobs[selected], "id", None)
+                return str(job_id) if job_id else None
+        return None
+
     def _resubmit_job(self, job_id: str) -> None:
         """Submit a new job using the same script_content as job_id."""
 
         def worker() -> None:
             try:
-                with self._lock:
-                    self._error = f"Resubmitting job {job_id}..."
+                self._flash_status(f"Resubmitting job {job_id}...")
                 detail = self._api.get_job(job_id)
                 if detail is None:
                     with self._lock:
@@ -517,11 +532,12 @@ class OverviewApp:
                             new_id = raw.decode("utf-8", errors="replace").strip()
                         elif raw:
                             new_id = str(raw).strip()
+                if new_id:
+                    self._flash_status(f"Resubmitted {job_id} as {new_id}", seconds=4.0)
+                else:
+                    self._flash_status(f"Resubmitted {job_id} (no id in response)", seconds=4.0)
                 with self._lock:
-                    if new_id:
-                        self._error = f"Resubmitted {job_id} as {new_id}"
-                    else:
-                        self._error = f"Resubmitted {job_id} (no id in response)"
+                    self._error = None
             except Exception as exc:  # noqa: BLE001
                 with self._lock:
                     self._error = f"Resubmit failed for {job_id}: {exc}"
@@ -569,6 +585,13 @@ class OverviewApp:
             if jobs and 0 <= selected < len(jobs):
                 self._open_detail(jobs[selected])
             return False
+        if action == "submit":
+            job_id = self._selected_job_id()
+            if not job_id:
+                self._flash_status("No job selected to resubmit")
+                return False
+            self._resubmit_job(job_id)
+            return False
         if action == "cancel":
             with self._lock:
                 if self._mode == "detail":
@@ -592,8 +615,9 @@ class OverviewApp:
         return None
 
     def _flash_status(self, msg: str, seconds: float = 2.5) -> None:
-        self._status = msg
-        self._status_until = time.monotonic() + seconds
+        with self._lock:
+            self._status = msg
+            self._status_until = time.monotonic() + seconds
 
     def _copy_ip(self, ip: str) -> None:
         if copy_to_clipboard(ip):
@@ -754,6 +778,9 @@ class OverviewApp:
 
         if key in (ord("r"), ord("R")):
             return self._run_action("refresh")
+
+        if key in (ord("s"), ord("S")):
+            return self._run_action("submit")
 
         if key in (ord("c"), ord("C")):
             self._copy_visible_ips()
@@ -1173,7 +1200,12 @@ class OverviewApp:
             out_lines = str(stdout_text).splitlines() or ["(no stdout yet)"]
         # Tail to fit the remaining rows.
         for line in out_lines[-remaining:]:
-            self._addstr(stdscr, y, 4, self._clip(line, width - 5), 0)
+            attr = 0
+            if line.startswith("Task ") and line.endswith(" stdout:"):
+                attr = curses.color_pair(PAIR_TITLE) | curses.A_BOLD
+            elif line and set(line) <= {"-"}:
+                attr = curses.color_pair(PAIR_TITLE)
+            self._addstr(stdscr, y, 4, self._clip(line, width - 5), attr)
             y += 1
 
     def _draw_footer(self, stdscr: typing.Any, height: int, width: int, mode: str) -> None:
