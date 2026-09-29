@@ -72,6 +72,7 @@ class OverviewApp:
         self._detail_job: typing.Any | None = None
         self._detail_id: str | None = None
         self._detail_stdout: str | None = None
+        self._detail_stderr: str | None = None
         self._partitions = 0
         self._cloud_nodes = 0
         self._active_job_count = 0
@@ -346,7 +347,8 @@ class OverviewApp:
                     self._error = str(exc)
             return
 
-        stdout_text = self._read_job_stdout(detail_id)
+        stdout_text = self._read_job_stream(detail_id, "stdout")
+        stderr_text = self._read_job_stream(detail_id, "stderr")
 
         with self._lock:
             if self._mode != "detail" or self._detail_id != detail_id:
@@ -354,6 +356,7 @@ class OverviewApp:
             if detail is not None:
                 self._detail_job = detail
                 self._detail_stdout = stdout_text
+                self._detail_stderr = stderr_text
                 self._error = None
             else:
                 # Job gone; keep list snapshot and return to it.
@@ -361,24 +364,29 @@ class OverviewApp:
                 self._detail_job = None
                 self._detail_id = None
                 self._detail_stdout = None
+                self._detail_stderr = None
 
-    def _read_job_stdout(self, job_id: str) -> str:
-        """Fetch job stdout via API (script log + Task N sections) or a status string."""
+    def _read_job_stream(self, job_id: str, stream: str) -> str:
+        """Fetch job stdout/stderr via API (script log + Task N sections)."""
+        label = stream
         try:
-            file_obj = self._api.get_job_stdout(job_id)
+            if stream == "stdout":
+                file_obj = self._api.get_job_stdout(job_id)
+            else:
+                file_obj = self._api.get_job_stderr(job_id)
         except Exception as exc:  # noqa: BLE001 - show in detail pane
-            return f"(stdout unavailable: {exc})"
+            return f"({label} unavailable: {exc})"
         if file_obj is None:
-            return "(no stdout yet)"
+            return f"(no {label} yet)"
         payload = getattr(file_obj, "payload", None)
         if payload is None:
-            return "(no stdout yet)"
+            return f"(no {label} yet)"
         try:
             raw = payload.read()
         except Exception as exc:  # noqa: BLE001
-            return f"(stdout unavailable: {exc})"
+            return f"({label} unavailable: {exc})"
         if not raw:
-            return "(no stdout yet)"
+            return f"(no {label} yet)"
         if isinstance(raw, bytes):
             return raw.decode("utf-8", errors="replace")
         return str(raw)
@@ -391,6 +399,7 @@ class OverviewApp:
             self._detail_job = None
             self._detail_id = None
             self._detail_stdout = None
+            self._detail_stderr = None
 
     def _open_detail(self, job: typing.Any) -> None:
         """Switch to detail mode for job (snapshot first, then background refresh)."""
@@ -402,6 +411,7 @@ class OverviewApp:
             self._detail_id = str(job_id)
             self._detail_job = job
             self._detail_stdout = None
+            self._detail_stderr = None
             self._mode = "detail"
         self._request_detail_refresh()
 
@@ -877,6 +887,7 @@ class OverviewApp:
             error = self._error
             detail_job = self._detail_job
             detail_stdout = self._detail_stdout
+            detail_stderr = self._detail_stderr
             refreshing = self._refreshing
 
         visible = max(1, height - FOOTER_HEIGHT - STATS_HEIGHT - 1)
@@ -894,7 +905,7 @@ class OverviewApp:
             self._status = None
         self._draw_stats(stdscr, width)
         if mode == "detail":
-            self._draw_detail(stdscr, height, width, detail_job, detail_stdout)
+            self._draw_detail(stdscr, height, width, detail_job, detail_stdout, detail_stderr)
         else:
             self._draw_job_table(stdscr, height, width, jobs, selected, scroll)
         self._draw_status_line(
@@ -1142,6 +1153,7 @@ class OverviewApp:
         width: int,
         job: typing.Any | None,
         stdout_text: str | None,
+        stderr_text: str | None = None,
     ) -> None:
         y = STATS_HEIGHT
         bottom = height - FOOTER_HEIGHT
@@ -1174,7 +1186,7 @@ class OverviewApp:
             )
             y += 1
 
-        # Cap state_details so stdout keeps the remaining pane.
+        # Cap state_details so stdout/stderr keep the remaining pane.
         detail_lines = [ln for ln in str(details).splitlines() if ln][:3]
         y += 1
         if y < bottom:
@@ -1186,27 +1198,51 @@ class OverviewApp:
             self._addstr(stdscr, y, 4, self._clip(line, width - 5), 0)
             y += 1
 
-        y += 1
-        if y < bottom:
-            self._addstr(stdscr, y, 2, "Stdout", curses.color_pair(PAIR_TITLE) | curses.A_BOLD)
-            y += 1
-
-        remaining = max(0, bottom - y)
+        # Split remaining rows between stdout and stderr (stdout gets more when odd).
+        remaining = max(0, bottom - y - 2)  # leave room for two section titles
         if remaining <= 0:
             return
-        if stdout_text is None:
-            out_lines = ["(loading stdout...)"]
+        out_budget = max(1, (remaining + 1) // 2)
+        err_budget = max(1, remaining - out_budget)
+
+        y = self._draw_stream_section(stdscr, y, bottom, width, "Stdout", stdout_text, "stdout", out_budget)
+        self._draw_stream_section(stdscr, y, bottom, width, "Stderr", stderr_text, "stderr", err_budget)
+
+    def _draw_stream_section(
+        self,
+        stdscr: typing.Any,
+        y: int,
+        bottom: int,
+        width: int,
+        title: str,
+        text: str | None,
+        stream: str,
+        budget: int,
+    ) -> int:
+        """Draw a Stdout/Stderr block; return the next free row."""
+        if y >= bottom:
+            return y
+        y += 1
+        if y < bottom:
+            self._addstr(stdscr, y, 2, title, curses.color_pair(PAIR_TITLE) | curses.A_BOLD)
+            y += 1
+        rows_left = max(0, min(budget, bottom - y))
+        if rows_left <= 0:
+            return y
+        if text is None:
+            lines = [f"(loading {stream}...)"]
         else:
-            out_lines = str(stdout_text).splitlines() or ["(no stdout yet)"]
-        # Tail to fit the remaining rows.
-        for line in out_lines[-remaining:]:
+            lines = str(text).splitlines() or [f"(no {stream} yet)"]
+        task_suffix = f" {stream}:"
+        for line in lines[-rows_left:]:
             attr = 0
-            if line.startswith("Task ") and line.endswith(" stdout:"):
+            if line.startswith("Task ") and line.endswith(task_suffix):
                 attr = curses.color_pair(PAIR_TITLE) | curses.A_BOLD
             elif line and set(line) <= {"-"}:
                 attr = curses.color_pair(PAIR_TITLE)
             self._addstr(stdscr, y, 4, self._clip(line, width - 5), attr)
             y += 1
+        return y
 
     def _draw_footer(self, stdscr: typing.Any, height: int, width: int, mode: str) -> None:
         y = height - BUTTONS_HEIGHT
