@@ -1186,16 +1186,21 @@ class OverviewApp:
             )
             y += 1
 
-        # Cap state_details so stdout/stderr keep the remaining pane.
-        detail_lines = [ln for ln in str(details).splitlines() if ln][:3]
+        # Show full multiline Details (wrap to width; no mid-line "..."). Reserve a
+        # few rows for Stdout/Stderr when the pane is tall enough.
         y += 1
         if y < bottom:
             self._addstr(stdscr, y, 2, "Details", curses.color_pair(PAIR_TITLE) | curses.A_BOLD)
             y += 1
-        for line in detail_lines or [""]:
+        avail = max(0, bottom - y)
+        # Two stream titles + at least one line each when possible.
+        min_stream = 4 if avail > 6 else 0
+        detail_budget = max(0, avail - min_stream)
+        wrapped = self._wrap_text(str(details), max(1, width - 5))
+        for line in wrapped[:detail_budget] or [""]:
             if y >= bottom:
                 break
-            self._addstr(stdscr, y, 4, self._clip(line, width - 5), 0)
+            self._addstr(stdscr, y, 4, line, 0)
             y += 1
 
         # Split remaining rows between stdout and stderr (stdout gets more when odd).
@@ -1297,6 +1302,22 @@ class OverviewApp:
         if width <= 3:
             return text[:width]
         return text[: width - 3] + "..."
+
+    @staticmethod
+    def _wrap_text(text: str, width: int) -> list[str]:
+        """Soft-wrap each logical line to ``width``; preserve blank lines."""
+        if width <= 0:
+            return [""]
+        out: list[str] = []
+        for raw in text.splitlines() or [""]:
+            if raw == "":
+                out.append("")
+                continue
+            while len(raw) > width:
+                out.append(raw[:width])
+                raw = raw[width:]
+            out.append(raw)
+        return out
 
     def _addstr(self, win: typing.Any, y: int, x: int, text: str, attr: int = 0) -> None:
         try:
