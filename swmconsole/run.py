@@ -9,9 +9,10 @@ from enum import Enum
 
 import httpx
 import yaml
-from swmclient.api import SwmApi  # type: ignore[import-not-found]
-from swmclient.generated.models.resource import Resource  # type: ignore[import-not-found]
-from swmclient.generated.types import File  # type: ignore[import-not-found]
+from swmclient.api import SwmApi
+from swmclient.generated.models.resource import Resource
+from swmclient.generated.types import File
+
 from tabulate import tabulate
 
 from .common import (

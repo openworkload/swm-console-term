@@ -1,3 +1,15 @@
+<p align="center">
+    <a href="https://pypi.python.org/pypi/swmconsole" alt="Latest package version">
+        <img src="https://img.shields.io/pypi/v/swmconsole.svg" />
+    </a>
+    <a href="LICENSE" alt="License">
+        <img src="https://img.shields.io/github/license/openworkload/swm-console-term" />
+    </a>
+    <a href="https://github.com/openworkload/swm-console-term/actions/workflows/ci.yml" alt="Latest CI tests result">
+        <img src="https://github.com/openworkload/swm-console-term/actions/workflows/ci.yml/badge.svg?event=push" />
+    </a>
+</p>
+
 Sky Port terminal implemented as a console script written in Python
 =====================================================================
 
@@ -114,6 +126,20 @@ Code autoformatting and validation tools start with the following commands:
 make format
 make check
 ```
+
+## Run unit tests:
+```bash
+make test
+```
+
+## Run GitHub Actions locally (act + Podman):
+```bash
+make act
+make act ARGS='--job unit_tests'
+make act ARGS='--job check --rm'
+```
+
+Requires `podman.socket` (or `podman system service`) and `act` on PATH.
 
 ## Update swmclient
 

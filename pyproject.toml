@@ -43,7 +43,7 @@ dynamic = ["version", "readme"]
 Homepage = "https://openworkload.org"
 Documentation = "https://openworkload.org"
 Repository = "https://github.com/openworkload/swm-console-term"
-Tests = "https://github.com/openworkload/swm-console-term/tree/master/test"
+Tests = "https://github.com/openworkload/swm-console-term/tree/master/tests"
 Issues = "https://github.com/openworkload/swm-console-term/issues"
 Distribution = "https://pypi.org/project/swmconsole"
 
@@ -96,3 +96,8 @@ profile = "black"
 python_version = 3.12
 strict = true
 follow_imports = "silent"
+
+[[tool.mypy.overrides]]
+module = "swmclient.*"
+ignore_missing_imports = true
+

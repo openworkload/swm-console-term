@@ -11,11 +11,12 @@ prepare-venv:
 	test -x $(VENV_BIN)/python
 	$(VENV_BIN)/python -m pip install --upgrade pip
 	$(VENV_BIN)/python -m pip install --ignore-installed --no-deps -r requirements.txt
-	$(VENV_BIN)/python -m pip install -e .
+	$(VENV_BIN)/python -m pip install -e ".[test]"
 	# PyPI swmclient may lag local (e.g. purge_jobs); prefer sibling checkout when present.
 	if [ -d ../swm-python-client ]; then
 		$(VENV_BIN)/python -m pip install -e ../swm-python-client
 	fi
+
 
 .PHONY: format
 format:
@@ -29,6 +30,16 @@ check:
 	. .venv/bin/activate
 	$(VENV_BIN)/flake8 swmconsole
 	$(VENV_BIN)/mypy swmconsole
+
+.PHONY: test
+test:
+	. .venv/bin/activate
+	$(VENV_BIN)/python -m pytest -q tests
+
+.PHONY: act
+act:
+	scripts/run-act.sh $(ARGS)
+
 
 .PHONY: update-client-package
 update-client-package:
