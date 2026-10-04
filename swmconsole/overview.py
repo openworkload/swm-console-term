@@ -1179,6 +1179,9 @@ class OverviewApp:
 
         details = job.state_details or ""
         node_ips = ", ".join(str(ip) for ip in (job.node_ips or []) if ip)
+        ckpt = getattr(job, "checkpoint_display", None)
+        if not isinstance(ckpt, str):
+            ckpt = "disabled"
         rows = [
             ("ID", str(job.id)),
             ("Submit", str(job.submit_time or "")),
@@ -1186,6 +1189,7 @@ class OverviewApp:
             ("End", str(job.end_time or "")),
             ("Node IPs", node_ips),
             ("State", self._state_str(job)),
+            ("Checkpoint", ckpt),
         ]
         rows.extend(self._metrics_detail_rows(metrics))
         label_w = 10

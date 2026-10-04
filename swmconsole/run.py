@@ -280,6 +280,9 @@ def print_job_show(args: argparse.Namespace, swm_api: SwmApi) -> None:
             print_as_yaml(payload)
             return
         details = job.state_details or ""
+        ckpt = getattr(job, "checkpoint_display", None)
+        if not isinstance(ckpt, str):
+            ckpt = "disabled"
         table = [
             ["ID", job.id],
             ["Submit", job.submit_time],
@@ -287,6 +290,7 @@ def print_job_show(args: argparse.Namespace, swm_api: SwmApi) -> None:
             ["End", job.end_time],
             ["Node IPs", ", ".join(job.node_ips)],
             ["State", job.state],
+            ["Checkpoint", ckpt],
         ]
         if metrics is not None:
             table.extend(
