@@ -73,6 +73,8 @@ class OverviewApp:
         self._detail_id: str | None = None
         self._detail_stdout: str | None = None
         self._detail_stderr: str | None = None
+        # JobMetrics | None while loading; False means fetch failed / n/a.
+        self._detail_metrics: typing.Any | None | bool = None
         self._partitions = 0
         self._cloud_nodes = 0
         self._active_job_count = 0
@@ -349,6 +351,7 @@ class OverviewApp:
 
         stdout_text = self._read_job_stream(detail_id, "stdout")
         stderr_text = self._read_job_stream(detail_id, "stderr")
+        metrics = self._read_job_metrics(detail_id)
 
         with self._lock:
             if self._mode != "detail" or self._detail_id != detail_id:
@@ -357,6 +360,7 @@ class OverviewApp:
                 self._detail_job = detail
                 self._detail_stdout = stdout_text
                 self._detail_stderr = stderr_text
+                self._detail_metrics = metrics
                 self._error = None
             else:
                 # Job gone; keep list snapshot and return to it.
@@ -365,6 +369,18 @@ class OverviewApp:
                 self._detail_id = None
                 self._detail_stdout = None
                 self._detail_stderr = None
+                self._detail_metrics = None
+
+    def _read_job_metrics(self, job_id: str) -> typing.Any | bool:
+        """Fetch job avg/max metrics; False on failure so the detail pane stays usable."""
+        try:
+            get_metrics = getattr(self._api, "get_job_metrics", None)
+            if get_metrics is None:
+                return False
+            metrics = get_metrics(job_id)
+        except Exception:  # noqa: BLE001 - detail pane shows n/a
+            return False
+        return metrics if metrics is not None else False
 
     def _read_job_stream(self, job_id: str, stream: str) -> str:
         """Fetch job stdout/stderr via API (script log + Task N sections)."""
@@ -400,6 +416,7 @@ class OverviewApp:
             self._detail_id = None
             self._detail_stdout = None
             self._detail_stderr = None
+            self._detail_metrics = None
 
     def _open_detail(self, job: typing.Any) -> None:
         """Switch to detail mode for job (snapshot first, then background refresh)."""
@@ -412,6 +429,7 @@ class OverviewApp:
             self._detail_job = job
             self._detail_stdout = None
             self._detail_stderr = None
+            self._detail_metrics = None
             self._mode = "detail"
         self._request_detail_refresh()
 
@@ -888,6 +906,7 @@ class OverviewApp:
             detail_job = self._detail_job
             detail_stdout = self._detail_stdout
             detail_stderr = self._detail_stderr
+            detail_metrics = self._detail_metrics
             refreshing = self._refreshing
 
         visible = max(1, height - FOOTER_HEIGHT - STATS_HEIGHT - 1)
@@ -905,7 +924,7 @@ class OverviewApp:
             self._status = None
         self._draw_stats(stdscr, width)
         if mode == "detail":
-            self._draw_detail(stdscr, height, width, detail_job, detail_stdout, detail_stderr)
+            self._draw_detail(stdscr, height, width, detail_job, detail_stdout, detail_stderr, detail_metrics)
         else:
             self._draw_job_table(stdscr, height, width, jobs, selected, scroll)
         self._draw_status_line(
@@ -1059,11 +1078,7 @@ class OverviewApp:
         ``right_text`` is the refresh/update label (drawn right-aligned).
         """
         refresh_lbl = "updating..." if refreshing else f"every {self._interval:g}s"
-        stats = (
-            f"Cloud partitions: {partitions}  "
-            f"Active jobs: {active_jobs}  "
-            f"Cloud nodes: {cloud_nodes}"
-        )
+        stats = f"Cloud partitions: {partitions}  " f"Active jobs: {active_jobs}  " f"Cloud nodes: {cloud_nodes}"
         if error:
             left, pair = f"Error: {error}", PAIR_STATUS_ERROR
         elif status_msg:
@@ -1154,6 +1169,7 @@ class OverviewApp:
         job: typing.Any | None,
         stdout_text: str | None,
         stderr_text: str | None = None,
+        metrics: typing.Any | None | bool = None,
     ) -> None:
         y = STATS_HEIGHT
         bottom = height - FOOTER_HEIGHT
@@ -1171,6 +1187,7 @@ class OverviewApp:
             ("Node IPs", node_ips),
             ("State", self._state_str(job)),
         ]
+        rows.extend(self._metrics_detail_rows(metrics))
         label_w = 10
         value_x = 2 + label_w + 2
         for label, value in rows:
@@ -1212,6 +1229,59 @@ class OverviewApp:
 
         y = self._draw_stream_section(stdscr, y, bottom, width, "Stdout", stdout_text, "stdout", out_budget)
         self._draw_stream_section(stdscr, y, bottom, width, "Stderr", stderr_text, "stderr", err_budget)
+
+    @staticmethod
+    def _format_metric_num(value: typing.Any) -> str:
+        if value is None:
+            return "n/a"
+        # Generated client uses an Unset singleton that is falsy.
+        if type(value).__name__ == "Unset":
+            return "n/a"
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return "n/a"
+        if abs(number) >= 1_000_000_000:
+            return f"{number / 1_000_000_000:.2f}G"
+        if abs(number) >= 1_000_000:
+            return f"{number / 1_000_000:.2f}M"
+        if abs(number) >= 10_000:
+            return f"{number / 1_000:.1f}k"
+        if number == int(number):
+            return str(int(number))
+        return f"{number:.1f}"
+
+    @classmethod
+    def _format_avg_max(cls, pair: typing.Any) -> str:
+        if pair is None:
+            return "avg n/a  max n/a"
+        avg = cls._format_metric_num(getattr(pair, "avg", None))
+        # OpenAPI field `max` is generated as `max_` (Python keyword).
+        max_v = cls._format_metric_num(getattr(pair, "max_", getattr(pair, "max", None)))
+        return f"avg {avg}  max {max_v}"
+
+    @classmethod
+    def _metrics_detail_rows(cls, metrics: typing.Any | None | bool) -> list[tuple[str, str]]:
+        if metrics is None:
+            return [
+                ("CPU %", "loading..."),
+                ("Mem", "loading..."),
+                ("GPU %", "loading..."),
+                ("GPU Mem", "loading..."),
+            ]
+        if metrics is False:
+            return [
+                ("CPU %", "n/a"),
+                ("Mem", "n/a"),
+                ("GPU %", "n/a"),
+                ("GPU Mem", "n/a"),
+            ]
+        return [
+            ("CPU %", cls._format_avg_max(getattr(metrics, "cpu_percent", None))),
+            ("Mem", cls._format_avg_max(getattr(metrics, "mem_bytes", None))),
+            ("GPU %", cls._format_avg_max(getattr(metrics, "gpu_util_percent", None))),
+            ("GPU Mem", cls._format_avg_max(getattr(metrics, "gpu_mem_bytes", None))),
+        ]
 
     def _draw_stream_section(
         self,

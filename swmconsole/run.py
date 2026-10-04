@@ -213,11 +213,71 @@ def job_to_dict(job: typing.Any, *, truncate: bool = False, main_ip_only: bool =
     return data
 
 
+def _format_metric_num(value: typing.Any) -> str:
+    if value is None or type(value).__name__ == "Unset":
+        return "n/a"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "n/a"
+    if abs(number) >= 1_000_000_000:
+        return f"{number / 1_000_000_000:.2f}G"
+    if abs(number) >= 1_000_000:
+        return f"{number / 1_000_000:.2f}M"
+    if abs(number) >= 10_000:
+        return f"{number / 1_000:.1f}k"
+    if number == int(number):
+        return str(int(number))
+    return f"{number:.1f}"
+
+
+def _format_avg_max(pair: typing.Any) -> str:
+    if pair is None:
+        return "avg n/a  max n/a"
+    avg = _format_metric_num(getattr(pair, "avg", None))
+    max_v = _format_metric_num(getattr(pair, "max_", getattr(pair, "max", None)))
+    return f"avg {avg}  max {max_v}"
+
+
+def metrics_to_dict(metrics: typing.Any) -> typing.Dict[str, typing.Any]:
+    def pair_dict(pair: typing.Any) -> typing.Dict[str, typing.Any]:
+        if pair is None:
+            return {"avg": None, "max": None}
+
+        def num(v: typing.Any) -> typing.Any:
+            if v is None or type(v).__name__ == "Unset":
+                return None
+            return v
+
+        return {
+            "avg": num(getattr(pair, "avg", None)),
+            "max": num(getattr(pair, "max_", getattr(pair, "max", None))),
+        }
+
+    return {
+        "job_id": str(getattr(metrics, "job_id", "")),
+        "cpu_percent": pair_dict(getattr(metrics, "cpu_percent", None)),
+        "mem_bytes": pair_dict(getattr(metrics, "mem_bytes", None)),
+        "gpu_util_percent": pair_dict(getattr(metrics, "gpu_util_percent", None)),
+        "gpu_mem_bytes": pair_dict(getattr(metrics, "gpu_mem_bytes", None)),
+    }
+
+
 def print_job_show(args: argparse.Namespace, swm_api: SwmApi) -> None:
     job_id = args.job_show
     if (job := swm_api.get_job(job_id)) is not None:
+        metrics = None
+        try:
+            get_metrics = getattr(swm_api, "get_job_metrics", None)
+            if get_metrics is not None:
+                metrics = get_metrics(job_id)
+        except Exception:  # noqa: BLE001 - job show still works without metrics
+            metrics = None
         if args.yaml:
-            print_as_yaml({"job": job_to_dict(job)})
+            payload: typing.Dict[str, typing.Any] = {"job": job_to_dict(job)}
+            if metrics is not None:
+                payload["metrics"] = metrics_to_dict(metrics)
+            print_as_yaml(payload)
             return
         details = job.state_details or ""
         table = [
@@ -228,6 +288,15 @@ def print_job_show(args: argparse.Namespace, swm_api: SwmApi) -> None:
             ["Node IPs", ", ".join(job.node_ips)],
             ["State", job.state],
         ]
+        if metrics is not None:
+            table.extend(
+                [
+                    ["CPU %", _format_avg_max(getattr(metrics, "cpu_percent", None))],
+                    ["Mem", _format_avg_max(getattr(metrics, "mem_bytes", None))],
+                    ["GPU %", _format_avg_max(getattr(metrics, "gpu_util_percent", None))],
+                    ["GPU Mem", _format_avg_max(getattr(metrics, "gpu_mem_bytes", None))],
+                ]
+            )
         # Keep Details out of the table so multiline text is not easy to miss
         # among tabulate continuation rows (label column blank on lines 2+).
         print(tabulate(table, tablefmt="presto"))
