@@ -17,6 +17,7 @@ from .common import (
     is_job_active,
     job_state_code,
     main_node_ip,
+    sanitize_for_terminal,
     sort_jobs_for_overview,
     truncate_details,
 )
@@ -316,7 +317,7 @@ class OverviewApp:
             error = None
         except Exception as exc:  # noqa: BLE001 - show any API/network failure in the TUI
             with self._lock:
-                self._error = str(exc)
+                self._error = sanitize_for_terminal(str(exc))
             return
 
         with self._lock:
@@ -346,7 +347,7 @@ class OverviewApp:
         except Exception as exc:  # noqa: BLE001
             with self._lock:
                 if self._detail_id == detail_id:
-                    self._error = str(exc)
+                    self._error = sanitize_for_terminal(str(exc))
             return
 
         stdout_text = self._read_job_stream(detail_id, "stdout")
@@ -391,7 +392,7 @@ class OverviewApp:
             else:
                 file_obj = self._api.get_job_stderr(job_id)
         except Exception as exc:  # noqa: BLE001 - show in detail pane
-            return f"({label} unavailable: {exc})"
+            return sanitize_for_terminal(f"({label} unavailable: {exc})")
         if file_obj is None:
             return f"(no {label} yet)"
         payload = getattr(file_obj, "payload", None)
@@ -400,12 +401,14 @@ class OverviewApp:
         try:
             raw = payload.read()
         except Exception as exc:  # noqa: BLE001
-            return f"({label} unavailable: {exc})"
+            return sanitize_for_terminal(f"({label} unavailable: {exc})")
         if not raw:
             return f"(no {label} yet)"
         if isinstance(raw, bytes):
-            return raw.decode("utf-8", errors="replace")
-        return str(raw)
+            text = raw.decode("utf-8", errors="replace")
+        else:
+            text = str(raw)
+        return sanitize_for_terminal(text)
 
     def _leave_detail(self) -> None:
         """Return from job details to the overview job list."""
@@ -561,14 +564,16 @@ class OverviewApp:
                         elif raw:
                             new_id = str(raw).strip()
                 if new_id:
-                    self._flash_status(f"Resubmitted {job_id} as {new_id}", seconds=4.0)
+                    self._flash_status(
+                        sanitize_for_terminal(f"Resubmitted {job_id} as {new_id}"), seconds=4.0
+                    )
                 else:
                     self._flash_status(f"Resubmitted {job_id} (no id in response)", seconds=4.0)
                 with self._lock:
                     self._error = None
             except Exception as exc:  # noqa: BLE001
                 with self._lock:
-                    self._error = f"Resubmit failed for {job_id}: {exc}"
+                    self._error = sanitize_for_terminal(f"Resubmit failed for {job_id}: {exc}")
             self._request_refresh()
 
         threading.Thread(target=worker, name="swm-overview-resubmit", daemon=True).start()
@@ -644,7 +649,7 @@ class OverviewApp:
 
     def _flash_status(self, msg: str, seconds: float = 2.5) -> None:
         with self._lock:
-            self._status = msg
+            self._status = sanitize_for_terminal(msg)
             self._status_until = time.monotonic() + seconds
 
     def _copy_ip(self, ip: str) -> None:
@@ -878,10 +883,10 @@ class OverviewApp:
             try:
                 self._api.cancel_job(str(job_id))
                 with self._lock:
-                    self._error = f"Canceled job {job_id}"
+                    self._error = sanitize_for_terminal(f"Canceled job {job_id}")
             except Exception as exc:  # noqa: BLE001 - show in TUI
                 with self._lock:
-                    self._error = f"Cancel failed for {job_id}: {exc}"
+                    self._error = sanitize_for_terminal(f"Cancel failed for {job_id}: {exc}")
             # Refresh list (and detail if still open on this job).
             with self._lock:
                 mode = self._mode
@@ -1144,12 +1149,12 @@ class OverviewApp:
             job = jobs[job_idx]
             ip = main_node_ip(job)
             row = [
-                str(job.id),
-                str(job.submit_time or ""),
-                str(job.start_time or ""),
-                str(job.end_time or ""),
-                ip,
-                self._state_str(job),
+                sanitize_for_terminal(str(job.id)),
+                sanitize_for_terminal(str(job.submit_time or "")),
+                sanitize_for_terminal(str(job.start_time or "")),
+                sanitize_for_terminal(str(job.end_time or "")),
+                sanitize_for_terminal(ip),
+                sanitize_for_terminal(self._state_str(job)),
                 truncate_details(job.state_details, max_len=max(10, widths[-1])),
             ]
             line = self._clip(self._format_row(row, widths), width)
@@ -1177,18 +1182,22 @@ class OverviewApp:
             self._addstr(stdscr, y, 2, "No job details", curses.color_pair(PAIR_ERROR))
             return
 
-        details = job.state_details or ""
-        node_ips = ", ".join(str(ip) for ip in (job.node_ips or []) if ip)
+        details = sanitize_for_terminal(job.state_details or "")
+        node_ips = sanitize_for_terminal(
+            ", ".join(str(ip) for ip in (job.node_ips or []) if ip)
+        )
         ckpt = getattr(job, "checkpoint_display", None)
         if not isinstance(ckpt, str):
             ckpt = "disabled"
+        else:
+            ckpt = sanitize_for_terminal(ckpt)
         rows = [
-            ("ID", str(job.id)),
-            ("Submit", str(job.submit_time or "")),
-            ("Start", str(job.start_time or "")),
-            ("End", str(job.end_time or "")),
+            ("ID", sanitize_for_terminal(str(job.id))),
+            ("Submit", sanitize_for_terminal(str(job.submit_time or ""))),
+            ("Start", sanitize_for_terminal(str(job.start_time or ""))),
+            ("End", sanitize_for_terminal(str(job.end_time or ""))),
             ("Node IPs", node_ips),
-            ("State", self._state_str(job)),
+            ("State", sanitize_for_terminal(self._state_str(job))),
             ("Checkpoint", ckpt),
         ]
         rows.extend(self._metrics_detail_rows(metrics))
@@ -1399,7 +1408,8 @@ class OverviewApp:
             if y < 0 or y >= height or x >= width:
                 return
             max_len = max(0, width - x - 1)
-            win.addstr(y, x, text[:max_len], attr)
+            safe = sanitize_for_terminal(text)
+            win.addstr(y, x, safe[:max_len], attr)
         except curses.error:
             pass
 

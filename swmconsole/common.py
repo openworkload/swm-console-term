@@ -3,10 +3,32 @@
 from __future__ import annotations
 
 import base64
+import re
 import shutil
 import subprocess
 import typing
 from enum import Enum
+
+# Strip CSI/OSC/DCS-family escapes and remaining C0 controls (keep \n / \t).
+_ANSI_ESCAPE_RE = re.compile(
+    r"""
+    \x1b\][^\x07\x1b]*(?:\x07|\x1b\\)   # OSC ... BEL or ST
+    | \x1b\[[0-?]*[ -/]*[@-~]          # CSI
+    | \x1b[PX^_][^\x1b]*\x1b\\         # DCS / SOS / PM / APC ... ST
+    | \x1b.                            # other ESC sequences (incl. incomplete tail)
+    | \x1b                             # lone ESC
+    | [\x00-\x08\x0b-\x1f\x7f]         # C0 except TAB/LF; DEL
+    """,
+    re.VERBOSE,
+)
+
+
+def sanitize_for_terminal(text: str) -> str:
+    """Remove ANSI/control sequences so server text is safe to print or draw."""
+    if not text:
+        return ""
+    return _ANSI_ESCAPE_RE.sub("", text)
+
 
 # Meta-filter token for jobs that are still in progress (not F/C/E).
 JOB_STATE_ACTIVE = "active"
@@ -111,7 +133,7 @@ def copy_to_clipboard(text: str) -> bool:
 
 
 def truncate_details(details: typing.Optional[str], max_len: int = 50) -> str:
-    text = details or ""
+    text = sanitize_for_terminal(details or "")
     if len(text) <= max_len:
         return text
     return text[: max_len - 3] + "..."

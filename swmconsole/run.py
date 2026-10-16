@@ -22,6 +22,7 @@ from .common import (
     is_flavor_only_node,
     job_state_code,
     main_node_ip,
+    sanitize_for_terminal,
     truncate_details,
 )
 
@@ -165,13 +166,24 @@ def yaml_safe(value: typing.Any) -> typing.Any:
     """Convert API/model values into types that yaml.safe_dump can represent."""
     if isinstance(value, Enum):
         return yaml_safe(value.value)
-    if value is None or isinstance(value, (bool, int, float, str)):
+    if isinstance(value, str):
+        return sanitize_for_terminal(value)
+    if value is None or isinstance(value, (bool, int, float)):
         return value
     if isinstance(value, dict):
-        return {str(k): yaml_safe(v) for k, v in value.items()}
+        return {sanitize_for_terminal(str(k)): yaml_safe(v) for k, v in value.items()}
     if isinstance(value, (list, tuple, set)):
         return [yaml_safe(item) for item in value]
-    return str(value)
+    return sanitize_for_terminal(str(value))
+
+
+def _cell(value: typing.Any) -> str:
+    """Stringify and sanitize a table/display cell from API data."""
+    if value is None:
+        return ""
+    if isinstance(value, Enum):
+        value = value.value
+    return sanitize_for_terminal(str(value))
 
 
 def print_as_yaml(data: typing.Mapping[str, typing.Any]) -> None:
@@ -187,7 +199,11 @@ def print_action_result(args: argparse.Namespace, output: typing.Optional[bytes]
         else:
             print(empty_msg)
         return
-    lines = [line.strip() for line in output.decode("utf-8").split("\n") if line.strip()]
+    lines = [
+        sanitize_for_terminal(line.strip())
+        for line in output.decode("utf-8").split("\n")
+        if line.strip()
+    ]
     if args.yaml:
         print_as_yaml({"output": "\n".join(lines)})
     else:
@@ -199,18 +215,20 @@ def job_to_dict(job: typing.Any, *, truncate: bool = False, main_ip_only: bool =
     details = job.state_details or ""
     if truncate:
         details = truncate_details(details)
+    else:
+        details = sanitize_for_terminal(str(details))
     data: typing.Dict[str, typing.Any] = {
-        "id": job.id,
-        "submit_time": job.submit_time,
-        "start_time": job.start_time,
-        "end_time": job.end_time,
-        "state": job.state,
+        "id": _cell(job.id),
+        "submit_time": _cell(job.submit_time),
+        "start_time": _cell(job.start_time),
+        "end_time": _cell(job.end_time),
+        "state": _cell(job.state),
         "details": details,
     }
     if main_ip_only:
-        data["main_ip"] = main_node_ip(job)
+        data["main_ip"] = _cell(main_node_ip(job))
     else:
-        data["node_ips"] = list(job.node_ips)
+        data["node_ips"] = [_cell(ip) for ip in list(job.node_ips)]
     return data
 
 
@@ -280,17 +298,19 @@ def print_job_show(args: argparse.Namespace, swm_api: SwmApi) -> None:
                 payload["metrics"] = metrics_to_dict(metrics)
             print_as_yaml(payload)
             return
-        details = job.state_details or ""
+        details = sanitize_for_terminal(job.state_details or "")
         ckpt = getattr(job, "checkpoint_display", None)
         if not isinstance(ckpt, str):
             ckpt = "disabled"
+        else:
+            ckpt = sanitize_for_terminal(ckpt)
         table = [
-            ["ID", job.id],
-            ["Submit", job.submit_time],
-            ["Start", job.start_time],
-            ["End", job.end_time],
-            ["Node IPs", ", ".join(job.node_ips)],
-            ["State", job.state],
+            ["ID", _cell(job.id)],
+            ["Submit", _cell(job.submit_time)],
+            ["Start", _cell(job.start_time)],
+            ["End", _cell(job.end_time)],
+            ["Node IPs", ", ".join(_cell(ip) for ip in job.node_ips)],
+            ["State", _cell(job.state)],
             ["Checkpoint", ckpt],
         ]
         if metrics is not None:
@@ -388,7 +408,7 @@ def submit_new_job(args: argparse.Namespace, swm_api: SwmApi) -> None:
     lines: typing.List[str] = []
     while True:
         if raw := io_obj.payload.readline():
-            lines.append(raw.decode("utf-8").strip())
+            lines.append(sanitize_for_terminal(raw.decode("utf-8").strip()))
         else:
             break
     if args.yaml:
@@ -444,10 +464,10 @@ def print_nodes(args: argparse.Namespace, swm_api: SwmApi) -> None:
                 continue
             rows.append(
                 {
-                    "id": node.id,
-                    "name": node.name,
-                    "power": node.state_power,
-                    "alloc": node.state_alloc,
+                    "id": _cell(node.id),
+                    "name": _cell(node.name),
+                    "power": _cell(node.state_power),
+                    "alloc": _cell(node.state_alloc),
                     "storage": get_res_storage(node.resources),
                     "mem": get_res_mem(node.resources),
                     "cpus": get_res_cpus(node.resources),
@@ -464,7 +484,7 @@ def print_nodes(args: argparse.Namespace, swm_api: SwmApi) -> None:
         ]
         print(tabulate(table, headers=headers, tablefmt="presto"))
     else:
-        print(f"Wrong output: {nodes}", file=sys.stderr)
+        print(sanitize_for_terminal(f"Wrong output: {nodes}"), file=sys.stderr)
         sys.exit(1)
 
 
@@ -473,11 +493,11 @@ def print_remote_sites(args: argparse.Namespace, swm_api: SwmApi) -> None:
     if isinstance(remotes, list):
         rows = [
             {
-                "id": remote.id,
-                "name": remote.name,
-                "kind": remote.kind,
-                "default_image_id": remote.default_image_id,
-                "default_flavor_id": remote.default_flavor_id,
+                "id": _cell(remote.id),
+                "name": _cell(remote.name),
+                "kind": _cell(remote.kind),
+                "default_image_id": _cell(remote.default_image_id),
+                "default_flavor_id": _cell(remote.default_flavor_id),
             }
             for remote in remotes
         ]
@@ -490,14 +510,14 @@ def print_remote_sites(args: argparse.Namespace, swm_api: SwmApi) -> None:
         ]
         print(tabulate(table, headers=headers, tablefmt="presto"))
     else:
-        print(f"Wrong output: {remotes}", file=sys.stderr)
+        print(sanitize_for_terminal(f"Wrong output: {remotes}"), file=sys.stderr)
         sys.exit(1)
 
 
 def print_jobs(args: argparse.Namespace, swm_api: SwmApi) -> None:
     jobs = swm_api.get_jobs()
     if not isinstance(jobs, list):
-        print(f"Wrong output: {jobs}", file=sys.stderr)
+        print(sanitize_for_terminal(f"Wrong output: {jobs}"), file=sys.stderr)
         sys.exit(1)
     if args.state is not None:
         jobs = [job for job in jobs if job_matches_state_filter(job, args.state)]
@@ -530,12 +550,12 @@ def print_jobs(args: argparse.Namespace, swm_api: SwmApi) -> None:
     for job in jobs:
         table.append(
             [
-                job.id,
-                job.submit_time,
-                job.start_time,
-                job.end_time,
-                main_node_ip(job),
-                job.state,
+                _cell(job.id),
+                _cell(job.submit_time),
+                _cell(job.start_time),
+                _cell(job.end_time),
+                _cell(main_node_ip(job)),
+                _cell(job.state),
                 truncate_details(job.state_details),
             ]
         )
@@ -547,8 +567,8 @@ def print_flavors(args: argparse.Namespace, swm_api: SwmApi) -> None:
     if isinstance(flavors, list):
         rows = [
             {
-                "id": flavor.id,
-                "name": flavor.name,
+                "id": _cell(flavor.id),
+                "name": _cell(flavor.name),
                 "storage": get_res_storage(flavor.resources),
                 "mem": get_res_mem(flavor.resources),
                 "cpus": get_res_cpus(flavor.resources),
@@ -563,7 +583,7 @@ def print_flavors(args: argparse.Namespace, swm_api: SwmApi) -> None:
         table = [[row["id"], row["name"], row["storage"], row["mem"], row["cpus"], row["price"]] for row in rows]
         print(tabulate(table, headers=headers, tablefmt="presto"))
     else:
-        print(f"Wrong output: {flavors}", file=sys.stderr)
+        print(sanitize_for_terminal(f"Wrong output: {flavors}"), file=sys.stderr)
         sys.exit(1)
 
 
@@ -572,9 +592,9 @@ def print_images(args: argparse.Namespace, swm_api: SwmApi) -> None:
     if isinstance(images, list):
         rows = [
             {
-                "name": image.name,
-                "kind": image.kind,
-                "comment": image.comment,
+                "name": _cell(image.name),
+                "kind": _cell(image.kind),
+                "comment": _cell(image.comment),
             }
             for image in images
         ]
@@ -585,7 +605,7 @@ def print_images(args: argparse.Namespace, swm_api: SwmApi) -> None:
         table = [[row["name"], row["kind"], row["comment"]] for row in rows]
         print(tabulate(table, headers=headers, tablefmt="presto"))
     else:
-        print(f"Wrong output: {images}", file=sys.stderr)
+        print(sanitize_for_terminal(f"Wrong output: {images}"), file=sys.stderr)
         sys.exit(1)
 
 
